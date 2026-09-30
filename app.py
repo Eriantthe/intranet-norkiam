@@ -1,9 +1,15 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+import json
+import io
 from google import genai
+from google.genai import types
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
-# 1. FUNCIÓN PARA CREAR Y LLENAR LA BASE DE DATOS (FASE DE PRUEBA)
+# 1. INICIALIZAR BASE DE DATOS (Vacía, lista para llenarse con Drive)
 def inicializar_base_datos():
     conn = sqlite3.connect('norkiam.db')
     c = conn.cursor()
@@ -19,20 +25,6 @@ def inicializar_base_datos():
             estado_asistencia TEXT
         )
     ''')
-    
-    # Insertamos datos reales de tu PDF para que veas la magia hoy mismo
-    c.execute("SELECT COUNT(*) FROM registro_asistencia")
-    if c.fetchone()[0] == 0:
-        datos_prueba = [
-            ('2026-07-01', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '15:00', 'Presente'),
-            ('2026-07-02', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '19:00', 'Presente'),
-            ('2026-07-03', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '19:00', 'Presente'),
-            ('2026-07-01', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '19:00', '7:00', 'Presente'),
-            ('2026-07-02', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '19:00', '7:00', 'Presente')
-        ]
-        c.executemany('''INSERT INTO registro_asistencia 
-                         (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
-                         VALUES (?,?,?,?,?,?,?)''', datos_prueba)
     conn.commit()
     conn.close()
 
@@ -60,15 +52,75 @@ clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type=
 
 if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     st.sidebar.success("✅ Acceso autorizado")
-    st.sidebar.info("Base de datos local conectada y lista.")
     
-    # Conectamos el cerebro de Google
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    st.title("💬 Asistente de Datos Norkiam")
-    st.write("Pregúntame sobre el historial de asistencias, faltas o tardanzas del personal.")
+    # --- EL EXTRACTOR AUTOMÁTICO DE DRIVE ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📥 Base de Datos")
+    if st.sidebar.button("🔄 Leer PDFs desde Drive"):
+        with st.spinner("Extrayendo tablas a mano con IA... (Puede tomar un par de minutos)"):
+            try:
+                credenciales_dict = json.loads(st.secrets["CREDENCIALES_DRIVE"])
+                creds = service_account.Credentials.from_service_account_info(
+                    credenciales_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
+                )
+                drive_service = build('drive', 'v3', credentials=creds)
+                carpeta_id = st.secrets["CARPETA_DRIVE"]
+                
+                resultados = drive_service.files().list(
+                    q=f"'{carpeta_id}' in parents and trashed=false and mimeType='application/pdf'",
+                    fields="files(id, name)"
+                ).execute()
+                archivos = resultados.get('files', [])
+                
+                if not archivos:
+                    st.sidebar.warning("No hay PDFs en la carpeta de Drive.")
+                else:
+                    conn = sqlite3.connect('norkiam.db')
+                    c = conn.cursor()
+                    c.execute('DELETE FROM registro_asistencia') # Limpia datos antiguos para evitar duplicados
+                    
+                    for archivo in archivos:
+                        request = drive_service.files().get_media(fileId=archivo['id'])
+                        fh = io.BytesIO()
+                        downloader = MediaIoBaseDownload(fh, request)
+                        done = False
+                        while not done:
+                            status, done = downloader.next_chunk()
+                            
+                        documento = types.Part.from_bytes(data=fh.getvalue(), mime_type='application/pdf')
+                        
+                        instruccion = """
+                        Extrae los registros de asistencia de estas tablas escritas a mano.
+                        Devuelve ÚNICAMENTE un arreglo JSON válido con esta estructura exacta para cada fila:
+                        [
+                          {"fecha": "YYYY-MM-DD", "turno": "Día/Noche", "area": "...", "nombre_completo": "...", "hora_entrada": "...", "hora_salida": "...", "estado_asistencia": "Presente/Falta/Descanso/Permiso"}
+                        ]
+                        Asegúrate de extraer absolutamente todos los nombres legibles. No uses markdown ni texto adicional. Solo el JSON puro.
+                        """
+                        respuesta = client.models.generate_content(model='gemini-3.8-flash', contents=[documento, instruccion])
+                        texto_json = respuesta.text.strip().replace('```json', '').replace('```', '')
+                        
+                        datos_extraidos = json.loads(texto_json)
+                        for fila in datos_extraidos:
+                            c.execute('''INSERT INTO registro_asistencia 
+                                         (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
+                                         VALUES (?,?,?,?,?,?,?)''', 
+                                      (fila.get('fecha'), fila.get('turno'), fila.get('area'), fila.get('nombre_completo'), 
+                                       fila.get('hora_entrada'), fila.get('hora_salida'), fila.get('estado_asistencia')))
+                    
+                    conn.commit()
+                    conn.close()
+                    st.sidebar.success("✅ Base de datos actualizada exitosamente.")
+            except Exception as e:
+                st.sidebar.error(f"Error en sincronización: {e}")
+    st.sidebar.markdown("---")
+    # ----------------------------------------------
     
-    # 3. SISTEMA DE MEMORIA DEL CHAT
+    st.title("💬 Asistente de Datos Norkiam")
+    st.write("Pregúntame sobre el historial de asistencias o cálculos de planillas quincenales.")
+    
     if "mensajes" not in st.session_state:
         st.session_state.mensajes = []
 
@@ -76,8 +128,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         with st.chat_message(mensaje["rol"]):
             st.markdown(mensaje["contenido"])
 
-    # 4. EL CEREBRO DEL AGENTE IA
-    pregunta = st.chat_input("Ej: Dame el resumen de asistencias de Narciso este mes...")
+    pregunta = st.chat_input("Ej: Genera la asistencia completa de la primera quincena...")
     
     if pregunta:
         with st.chat_message("user"):
@@ -85,43 +136,37 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
         
         with st.chat_message("assistant"):
-            with st.spinner("Traduciendo a código y buscando en la base de datos..."):
+            with st.spinner("Buscando en la base de datos..."):
                 try:
-                    # Paso A: La IA traduce tu pregunta a código SQL matemático tolerante a errores
                     prompt_sql = f"""
                     Eres el traductor SQL de Norkiam. 
                     Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
                     Pregunta: "{pregunta}"
                     Genera ÚNICAMENTE la consulta SQL para responder esto. 
                     
-                    REGLAS VITALES DE BÚSQUEDA:
-                    1. Los usuarios cometen errores de tipeo. NUNCA busques la cadena de texto completa.
-                    2. Divide el nombre en palabras individuales y usa LIKE separadas por AND. 
-                       Ejemplo: Si buscan "garcia fuente", el SQL DEBE SER: SELECT * FROM registro_asistencia WHERE nombre_completo LIKE '%GARCIA%' AND nombre_completo LIKE '%FUENTE%'
-                    3. No uses comillas invertidas (```sql) ni markdown. Entrega solo el código SQL puro.
+                    REGLAS VITALES:
+                    1. Divide el nombre en palabras y usa LIKE separadas por AND.
+                    2. No uses markdown. Solo el código SQL puro.
                     """
                     respuesta_sql = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_sql)
                     query_limpia = respuesta_sql.text.strip().replace('```sql', '').replace('```', '')
                     
-                    # Paso B: La Intranet busca en la base de datos invisible en milisegundos
                     conn = sqlite3.connect('norkiam.db')
                     df = pd.read_sql_query(query_limpia, conn)
                     conn.close()
                     
-                    # Paso C: La IA traduce los datos puros a un texto hermoso para ti
                     if df.empty:
-                        respuesta_final = "No encontré registros en la base de datos para esa consulta. Intenta buscando con otro apellido."
+                        respuesta_final = "No encontré registros en la base de datos para esa consulta. Asegúrate de haber sincronizado el PDF de Drive primero."
                     else:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
                         El usuario preguntó: "{pregunta}". 
-                        La base de datos entregó estos resultados precisos:
+                        Datos obtenidos:
                         {datos_texto}
                         
                         Instrucciones:
-                        1. Crea una respuesta amable y corporativa.
-                        2. Muestra los datos obligatoriamente usando una tabla Markdown limpia y elegante.
-                        3. Si el usuario pidió un resumen o cálculo, hazlo basándote en los datos.
+                        1. Muestra los datos en una tabla Markdown limpia.
+                        2. Si pide cálculos para planillas (ej. quincenas), suma los días basados en el estado de asistencia y entrégale el reporte.
                         """
                         respuesta_ia = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_resumen)
                         respuesta_final = respuesta_ia.text
@@ -130,9 +175,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
                     
                 except Exception as e:
-                    error_msg = f"Lo siento, ocurrió un error técnico al buscar los datos: {e}"
-                    st.error(error_msg)
-                    st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
+                    st.error(f"Error técnico: {e}")
 
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta.")
