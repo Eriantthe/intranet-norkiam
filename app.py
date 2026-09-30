@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
 
@@ -22,10 +23,15 @@ st.markdown("---")
 st.write("**Bienvenido al sistema de gestión documental.** Sube facturas o asistencias manuscritas y consulta la información al instante con nuestro Escáner Inteligente.")
 
 st.sidebar.title("⚙️ Panel de Control")
-api_key = st.sidebar.text_input("1. Llave de Acceso (API Key):", type="password")
+# El sistema ahora pide la clave corporativa corta, no la llave de Google
+clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type="password")
 
-if api_key:
-    genai.configure(api_key=api_key)
+# Verifica si la clave ingresada es "norkiam2026" (la que guardaste en Secrets)
+if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
+    st.sidebar.success("✅ Acceso autorizado")
+    
+    # Conecta con Google usando la llave oculta en la bóveda
+    client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
     st.sidebar.subheader("2. Carga de Documentos")
     archivo_subido = st.sidebar.file_uploader("Sube facturas o asistencias (PDF)", type=["pdf"])
@@ -37,15 +43,13 @@ if api_key:
         pregunta = st.text_input("Ingresa tu consulta sobre el registro de asistencia:")
         
         if pregunta:
-            with st.spinner("Descifrando la caligrafía y analizando la tabla con el motor 3.8..."):
+            with st.spinner("Descifrando la caligrafía y analizando la tabla..."):
                 try:
-                    # ACTUALIZADO A LA VERSIÓN QUE EXIGE GOOGLE
-                    modelo = genai.GenerativeModel(model_name="gemini-3.8-flash")
-                    
-                    documento_inline = {
-                        "mime_type": "application/pdf",
-                        "data": archivo_subido.getvalue()
-                    }
+                    # Prepara el PDF de forma segura en la memoria
+                    documento = types.Part.from_bytes(
+                        data=archivo_subido.getvalue(),
+                        mime_type='application/pdf'
+                    )
                     
                     instruccion = f"""
                     Eres el asistente corporativo de Norkiam SAC.
@@ -54,10 +58,17 @@ if api_key:
                     Pregunta del usuario: {pregunta}
                     """
                     
-                    respuesta = modelo.generate_content([documento_inline, instruccion])
+                    # Usa el motor visual para leer el documento
+                    respuesta = client.models.generate_content(
+                        model='gemini-3.8-flash',
+                        contents=[documento, instruccion]
+                    )
+                    
                     st.info(respuesta.text)
                     
                 except Exception as e:
                     st.error(f"Ocurrió un error en la lectura: {e}")
+elif clave_ingresada:
+    st.sidebar.error("❌ Clave incorrecta. Consulta con la administración.")
 else:
-    st.info("👈 Por favor, ingresa la llave de acceso en el panel lateral para iniciar el sistema.")
+    st.info("👈 Por favor, ingresa la clave corporativa en el panel lateral para iniciar el sistema.")
