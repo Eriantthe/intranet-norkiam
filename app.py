@@ -87,14 +87,18 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         with st.chat_message("assistant"):
             with st.spinner("Traduciendo a código y buscando en la base de datos..."):
                 try:
-                    # Paso A: La IA traduce tu pregunta a código SQL matemático
+                    # Paso A: La IA traduce tu pregunta a código SQL matemático tolerante a errores
                     prompt_sql = f"""
                     Eres el traductor SQL de Norkiam. 
                     Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
                     Pregunta: "{pregunta}"
                     Genera ÚNICAMENTE la consulta SQL para responder esto. 
-                    Usa siempre LIKE '%...%' y MAYÚSCULAS para buscar nombres (ej: LIKE '%GARCIA%'). 
-                    No uses comillas invertidas ni markdown. Solo el código SQL puro.
+                    
+                    REGLAS VITALES DE BÚSQUEDA:
+                    1. Los usuarios cometen errores de tipeo. NUNCA busques la cadena de texto completa.
+                    2. Divide el nombre en palabras individuales y usa LIKE separadas por AND. 
+                       Ejemplo: Si buscan "garcia fuente", el SQL DEBE SER: SELECT * FROM registro_asistencia WHERE nombre_completo LIKE '%GARCIA%' AND nombre_completo LIKE '%FUENTE%'
+                    3. No uses comillas invertidas (```sql) ni markdown. Entrega solo el código SQL puro.
                     """
                     respuesta_sql = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_sql)
                     query_limpia = respuesta_sql.text.strip().replace('```sql', '').replace('```', '')
