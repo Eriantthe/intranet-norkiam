@@ -4,7 +4,6 @@ from google.genai import types
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
 
-# Diseño con el panel lateral azul corporativo y letras blancas
 st.markdown("""
     <style>
     /* 1. Pintar el fondo del panel lateral con el azul Norkiam */
@@ -27,6 +26,13 @@ st.markdown("""
         background-color: white !important;
         color: #0b1a50 !important;
         -webkit-text-fill-color: #0b1a50 !important;
+    }
+    
+    /* 4. NUEVO: Arreglar el texto del archivo subido (para que no sea blanco sobre blanco) */
+    [data-testid="stFileUploader"] div,
+    [data-testid="stFileUploader"] p,
+    [data-testid="stFileUploader"] small {
+        color: #0b1a50 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -61,7 +67,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         pregunta = st.text_input("Ingresa tu consulta sobre el registro de asistencia:")
         
         if pregunta:
-            with st.spinner("Descifrando la caligrafía y analizando la tabla..."):
+            with st.spinner("Descifrando la caligrafía y analizando la tabla con el motor 3.8..."):
                 try:
                     # Prepara el PDF
                     documento = types.Part.from_bytes(
