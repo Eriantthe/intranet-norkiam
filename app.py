@@ -4,9 +4,27 @@ from google.genai import types
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
 
+# Diseño con el panel lateral azul corporativo y letras blancas
 st.markdown("""
     <style>
+    /* 1. Pintar el fondo del panel lateral con el azul Norkiam */
+    [data-testid="stSidebar"] {
+        background-color: #0b1a50 !important;
+    }
+    
+    /* 2. Pintar todas las letras del panel lateral de blanco para que resalten */
+    [data-testid="stSidebar"] h1, 
+    [data-testid="stSidebar"] h2, 
+    [data-testid="stSidebar"] h3, 
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] div,
+    [data-testid="stSidebar"] label {
+        color: white !important;
+    }
+    
+    /* 3. Mantener la cajita de la clave en blanco con letras azules */
     [data-testid="stSidebar"] input {
+        background-color: white !important;
         color: #0b1a50 !important;
         -webkit-text-fill-color: #0b1a50 !important;
     }
@@ -23,14 +41,14 @@ st.markdown("---")
 st.write("**Bienvenido al sistema de gestión documental.** Sube facturas o asistencias manuscritas y consulta la información al instante con nuestro Escáner Inteligente.")
 
 st.sidebar.title("⚙️ Panel de Control")
-# El sistema ahora pide la clave corporativa corta, no la llave de Google
+# El sistema ahora pide la clave corporativa corta
 clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type="password")
 
-# Verifica si la clave ingresada es "norkiam2026" (la que guardaste en Secrets)
+# Verifica si la clave ingresada es correcta ("norkiam2026")
 if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     st.sidebar.success("✅ Acceso autorizado")
     
-    # Conecta con Google usando la llave oculta en la bóveda
+    # Conecta con Google usando la llave oculta
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
     st.sidebar.subheader("2. Carga de Documentos")
@@ -45,7 +63,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         if pregunta:
             with st.spinner("Descifrando la caligrafía y analizando la tabla..."):
                 try:
-                    # Prepara el PDF de forma segura en la memoria
+                    # Prepara el PDF
                     documento = types.Part.from_bytes(
                         data=archivo_subido.getvalue(),
                         mime_type='application/pdf'
