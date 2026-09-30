@@ -1,37 +1,32 @@
 import streamlit as st
+import json
+import io
 from google import genai
 from google.genai import types
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
 
+# Mantiene tu diseño azul corporativo
 st.markdown("""
     <style>
-    /* 1. Pintar el fondo del panel lateral con el azul Norkiam */
     [data-testid="stSidebar"] {
         background-color: #0b1a50 !important;
     }
-    
-    /* 2. Pintar todas las letras del panel lateral de blanco para que resalten */
-    [data-testid="stSidebar"] h1, 
-    [data-testid="stSidebar"] h2, 
-    [data-testid="stSidebar"] h3, 
-    [data-testid="stSidebar"] p,
-    [data-testid="stSidebar"] div,
-    [data-testid="stSidebar"] label {
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, 
+    [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] div, [data-testid="stSidebar"] label {
         color: white !important;
     }
-    
-    /* 3. Mantener la cajita de la clave en blanco con letras azules */
     [data-testid="stSidebar"] input {
         background-color: white !important;
         color: #0b1a50 !important;
         -webkit-text-fill-color: #0b1a50 !important;
     }
-    
-    /* 4. NUEVO: Arreglar el texto del archivo subido (para que no sea blanco sobre blanco) */
-    [data-testid="stFileUploader"] div,
-    [data-testid="stFileUploader"] p,
-    [data-testid="stFileUploader"] small {
+    /* Ajuste para que el texto del menú desplegable se lea bien */
+    [data-testid="stSidebar"] [data-baseweb="select"] {
         color: #0b1a50 !important;
     }
     </style>
@@ -44,54 +39,84 @@ except:
 
 st.title("Intranet Corporativa - Norkiam SAC")
 st.markdown("---")
-st.write("**Bienvenido al sistema de gestión documental.** Sube facturas o asistencias manuscritas y consulta la información al instante con nuestro Escáner Inteligente.")
+st.write("**Bienvenido al sistema de gestión documental.** Consulta directamente los archivos de la nube con nuestro Escáner Inteligente.")
 
-st.sidebar.title("⚙️ Panel de Control")
-# El sistema ahora pide la clave corporativa corta
+st.sidebar.title("⚙️️ Panel de Control")
 clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type="password")
 
-# Verifica si la clave ingresada es correcta ("norkiam2026")
 if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     st.sidebar.success("✅ Acceso autorizado")
     
-    # Conecta con Google usando la llave oculta
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
+    st.sidebar.subheader("2. Archivos en la Nube")
     
-    st.sidebar.subheader("2. Carga de Documentos")
-    archivo_subido = st.sidebar.file_uploader("Sube facturas o asistencias (PDF)", type=["pdf"])
-    
-    if archivo_subido:
-        st.sidebar.success("✅ ¡Documento recibido!")
+    try:
+        # 1. El sistema se identifica con Drive usando la credencial
+        credenciales_dict = json.loads(st.secrets["CREDENCIALES_DRIVE"])
+        creds = service_account.Credentials.from_service_account_info(
+            credenciales_dict, 
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        drive_service = build('drive', 'v3', credentials=creds)
         
-        st.subheader("💬 Asistente Virtual Norkiam (Modo Visión)")
-        pregunta = st.text_input("Ingresa tu consulta sobre el registro de asistencia:")
+        # 2. Busca los PDFs en la carpeta de la empresa
+        carpeta_id = st.secrets["CARPETA_DRIVE"]
+        resultados = drive_service.files().list(
+            q=f"'{carpeta_id}' in parents and trashed=false and mimeType='application/pdf'",
+            fields="files(id, name)"
+        ).execute()
+        archivos = resultados.get('files', [])
         
-        if pregunta:
-            with st.spinner("Descifrando la caligrafía y analizando la tabla con el motor 3.8..."):
-                try:
-                    # Prepara el PDF
-                    documento = types.Part.from_bytes(
-                        data=archivo_subido.getvalue(),
-                        mime_type='application/pdf'
-                    )
-                    
-                    instruccion = f"""
-                    Eres el asistente corporativo de Norkiam SAC.
-                    Analiza cuidadosamente este documento escaneado, incluyendo las tablas, las firmas y las letras escritas a mano con lapicero.
-                    Responde a la siguiente pregunta basándote ÚNICAMENTE en el documento adjunto.
-                    Pregunta del usuario: {pregunta}
-                    """
-                    
-                    # Usa el motor visual para leer el documento
-                    respuesta = client.models.generate_content(
-                        model='gemini-3.8-flash',
-                        contents=[documento, instruccion]
-                    )
-                    
-                    st.info(respuesta.text)
-                    
-                except Exception as e:
-                    st.error(f"Ocurrió un error en la lectura: {e}")
+        if not archivos:
+            st.sidebar.warning("📂 La carpeta de Drive está vacía. Sube un PDF allí para comenzar.")
+        else:
+            # 3. Muestra los archivos encontrados en un menú
+            nombres_archivos = ["(Selecciona un registro)"] + [f["name"] for f in archivos]
+            archivo_seleccionado = st.sidebar.selectbox("Elige el documento a escanear:", nombres_archivos)
+            
+            if archivo_seleccionado != "(Selecciona un registro)":
+                id_seleccionado = next(f["id"] for f in archivos if f["name"] == archivo_seleccionado)
+                
+                st.subheader(f"💬 Analizando: {archivo_seleccionado}")
+                pregunta = st.text_input("Ingresa tu consulta sobre este registro:")
+                
+                if pregunta:
+                    with st.spinner("Descargando de Drive y analizando con Inteligencia Artificial..."):
+                        try:
+                            # 4. Descarga silenciosa a la memoria RAM
+                            request = drive_service.files().get_media(fileId=id_seleccionado)
+                            fh = io.BytesIO()
+                            downloader = MediaIoBaseDownload(fh, request)
+                            done = False
+                            while done is False:
+                                status, done = downloader.next_chunk()
+                            
+                            # 5. Lectura con Gemini 3.8
+                            documento = types.Part.from_bytes(
+                                data=fh.getvalue(),
+                                mime_type='application/pdf'
+                            )
+                            
+                            instruccion = f"""
+                            Eres el asistente corporativo de Norkiam SAC.
+                            Analiza cuidadosamente este documento escaneado.
+                            Responde a la siguiente pregunta basándote ÚNICAMENTE en el documento adjunto.
+                            Pregunta del usuario: {pregunta}
+                            """
+                            
+                            respuesta = client.models.generate_content(
+                                model='gemini-3.8-flash',
+                                contents=[documento, instruccion]
+                            )
+                            
+                            st.info(respuesta.text)
+                            
+                        except Exception as e:
+                            st.error(f"Error al analizar el documento: {e}")
+                            
+    except Exception as e:
+        st.sidebar.error(f"Error de conexión con Drive. Detalle: {e}")
+        
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta. Consulta con la administración.")
 else:
