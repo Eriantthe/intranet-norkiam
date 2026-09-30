@@ -1,12 +1,12 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+from google import genai
 
-# 1. FUNCIÓN PARA CREAR LA BASE DE DATOS INVISIBLE
+# 1. FUNCIÓN PARA CREAR Y LLENAR LA BASE DE DATOS (FASE DE PRUEBA)
 def inicializar_base_datos():
     conn = sqlite3.connect('norkiam.db')
     c = conn.cursor()
-    # Crea la tabla maestra si no existe
     c.execute('''
         CREATE TABLE IF NOT EXISTS registro_asistencia (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,10 +19,23 @@ def inicializar_base_datos():
             estado_asistencia TEXT
         )
     ''')
+    
+    # Insertamos datos reales de tu PDF para que veas la magia hoy mismo
+    c.execute("SELECT COUNT(*) FROM registro_asistencia")
+    if c.fetchone()[0] == 0:
+        datos_prueba = [
+            ('2026-07-01', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '15:00', 'Presente'),
+            ('2026-07-02', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '19:00', 'Presente'),
+            ('2026-07-03', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '19:00', 'Presente'),
+            ('2026-07-01', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '19:00', '7:00', 'Presente'),
+            ('2026-07-02', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '19:00', '7:00', 'Presente')
+        ]
+        c.executemany('''INSERT INTO registro_asistencia 
+                         (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
+                         VALUES (?,?,?,?,?,?,?)''', datos_prueba)
     conn.commit()
     conn.close()
 
-# Ejecutamos la creación de la base de datos
 inicializar_base_datos()
 
 # 2. DISEÑO DE LA INTRANET
@@ -37,7 +50,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ---> AQUÍ ESTÁ TU LOGO DE REGRESO <---
 try:
     st.image("logo.jpg", width=250)
 except:
@@ -50,6 +62,9 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     st.sidebar.success("✅ Acceso autorizado")
     st.sidebar.info("Base de datos local conectada y lista.")
     
+    # Conectamos el cerebro de Google
+    client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
+    
     st.title("💬 Asistente de Datos Norkiam")
     st.write("Pregúntame sobre el historial de asistencias, faltas o tardanzas del personal.")
     
@@ -57,25 +72,63 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     if "mensajes" not in st.session_state:
         st.session_state.mensajes = []
 
-    # Mostrar mensajes anteriores en la pantalla
     for mensaje in st.session_state.mensajes:
         with st.chat_message(mensaje["rol"]):
             st.markdown(mensaje["contenido"])
 
-    # 4. BARRA DE CHAT INFERIOR
+    # 4. EL CEREBRO DEL AGENTE IA
     pregunta = st.chat_input("Ej: Dame el resumen de asistencias de Narciso este mes...")
     
     if pregunta:
-        # Mostrar lo que escribió el usuario
         with st.chat_message("user"):
             st.markdown(pregunta)
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
         
-        # Aquí conectaremos el cerebro de Gemini en el próximo paso
         with st.chat_message("assistant"):
-            respuesta_temporal = "Estoy procesando tu consulta. (El cerebro del Agente IA se conectará aquí en el próximo paso)."
-            st.markdown(respuesta_temporal)
-        st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_temporal})
+            with st.spinner("Traduciendo a código y buscando en la base de datos..."):
+                try:
+                    # Paso A: La IA traduce tu pregunta a código SQL matemático
+                    prompt_sql = f"""
+                    Eres el traductor SQL de Norkiam. 
+                    Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
+                    Pregunta: "{pregunta}"
+                    Genera ÚNICAMENTE la consulta SQL para responder esto. 
+                    Usa siempre LIKE '%...%' y MAYÚSCULAS para buscar nombres (ej: LIKE '%GARCIA%'). 
+                    No uses comillas invertidas ni markdown. Solo el código SQL puro.
+                    """
+                    respuesta_sql = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_sql)
+                    query_limpia = respuesta_sql.text.strip().replace('```sql', '').replace('```', '')
+                    
+                    # Paso B: La Intranet busca en la base de datos invisible en milisegundos
+                    conn = sqlite3.connect('norkiam.db')
+                    df = pd.read_sql_query(query_limpia, conn)
+                    conn.close()
+                    
+                    # Paso C: La IA traduce los datos puros a un texto hermoso para ti
+                    if df.empty:
+                        respuesta_final = "No encontré registros en la base de datos para esa consulta. Intenta buscando con otro apellido."
+                    else:
+                        datos_texto = df.to_csv(index=False)
+                        prompt_resumen = f"""
+                        El usuario preguntó: "{pregunta}". 
+                        La base de datos entregó estos resultados precisos:
+                        {datos_texto}
+                        
+                        Instrucciones:
+                        1. Crea una respuesta amable y corporativa.
+                        2. Muestra los datos obligatoriamente usando una tabla Markdown limpia y elegante.
+                        3. Si el usuario pidió un resumen o cálculo, hazlo basándote en los datos.
+                        """
+                        respuesta_ia = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_resumen)
+                        respuesta_final = respuesta_ia.text
+                        
+                    st.markdown(respuesta_final)
+                    st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
+                    
+                except Exception as e:
+                    error_msg = f"Lo siento, ocurrió un error técnico al buscar los datos: {e}"
+                    st.error(error_msg)
+                    st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
 
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta.")
