@@ -74,7 +74,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # 3. SINCRONIZACIÓN AUTÓNOMA CON PROTECCIÓN 503
+    # 3. SINCRONIZACIÓN AUTÓNOMA
     if "drive_sincronizado" not in st.session_state:
         with st.spinner("Verificando nuevos registros en Drive..."):
             try:
@@ -110,15 +110,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         [{"fecha": "YYYY-MM-DD", "turno": "Día/Noche", "area": "...", "nombre_completo": "...", "hora_entrada": "...", "hora_salida": "...", "estado_asistencia": "Presente/FALTA/Descanso/Permiso"}]
                         """
                         
-                        # Intento con reintento automático si falla por 503
-                        respuesta = None
-                        for intento in range(3):
-                            try:
-                                respuesta = client.models.generate_content(model='gemini-3.8-flash', contents=[documento, instruccion])
-                                break
-                            except Exception:
-                                time.sleep(2)
-                                
+                        respuesta = client.models.generate_content(model='gemini-1.5-flash', contents=[documento, instruccion])
                         if respuesta:
                             texto_json = respuesta.text.strip().replace('```json', '').replace('```', '')
                             datos_extraidos = json.loads(texto_json)
@@ -162,28 +154,21 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     Eres el traductor SQL de Norkiam. 
                     Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
                     Pregunta del usuario: "{pregunta}"
-                    Genera ÚNICAMENTE una consulta SQL válida para SQLite que responda esto.
+                    Genera ÚNICAMENTE una consulta SELECT de SQL válida para SQLite que responda esto.
                     
-                    REGLAS ESTRICTAS:
-                    1. Si la pregunta es general o no especifica nombre, haz un SELECT general filtrando por fechas o estados si aplica (Ej: SELECT * FROM registro_asistencia WHERE estado_asistencia = 'FALTA').
-                    2. Si especifica nombre, usa LIKE para buscar palabras clave.
-                    3. ESTÁ PROHIBIDO usar MONTH(), YEAR() o DAY(). Usa formato fecha 'YYYY-MM-DD' o BETWEEN.
-                    4. No uses markdown ni explicaciones. Solo el código SQL puro.
+                    REGLAS:
+                    1. Si piden faltas, incluye WHERE estado_asistencia LIKE '%FALTA%'.
+                    2. Si mencionan un nombre, usa LIKE para buscar palabras clave (Ej: nombre_completo LIKE '%NARCISO%').
+                    3. No uses funciones de fecha complejas (nada de MONTH o YEAR). Si mencionan julio o una fecha, filtra usando fecha LIKE '%-07-%' o BETWEEN.
+                    4. Devuelve ÚNICAMENTE el código SQL puro, sin bloques markdown ni texto adicional.
                     """
                     
-                    # Llamada a Gemini con reintento automático ante el error 503
-                    respuesta_sql = None
-                    for intento in range(3):
-                        try:
-                            respuesta_sql = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_sql)
-                            break
-                        except Exception:
-                            time.sleep(2)
-                            
-                    if not respuesta_sql:
-                        raise Exception("Los servidores de Google están experimentando alta demanda en este momento. Por favor, intenta de nuevo en unos segundos.")
-                        
+                    respuesta_sql = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_sql)
                     query_limpia = respuesta_sql.text.strip().replace('```sql', '').replace('```', '')
+                    
+                    # Limpieza por si la IA devuelve texto extra accidentalmente
+                    if not query_limpia.upper().startswith("SELECT"):
+                        query_limpia = "SELECT * FROM registro_asistencia"
                     
                     conn = sqlite3.connect('norkiam.db')
                     df = pd.read_sql_query(query_limpia, conn)
@@ -195,24 +180,24 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
                         El usuario preguntó: "{pregunta}". 
-                        Datos obtenidos:
+                        Datos obtenidos de la base de datos:
                         {datos_texto}
                         
                         Instrucciones:
                         1. Responde de forma natural y corporativa.
                         2. Muestra los resultados en una tabla Markdown limpia.
-                        3. Haz los cálculos necesarios si pidieron resúmenes o totales.
+                        3. Haz los cálculos necesarios si pidieron resúmenes o totales de faltas/asistencias.
                         """
                         
-                        respuesta_ia = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_resumen)
+                        respuesta_ia = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_resumen)
                         respuesta_final = respuesta_ia.text
                         
                     st.markdown(respuesta_final)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
                     
                 except Exception as e:
-                    error_msg = f"Aviso del sistema: {e}"
-                    st.warning(error_msg)
+                    error_msg = f"Error al procesar la consulta: {e}"
+                    st.error(error_msg)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
 
 elif clave_ingresada:
