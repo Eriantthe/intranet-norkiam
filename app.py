@@ -37,6 +37,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ---> AQUÍ ESTÁ TU LOGO DE REGRESO <---
+try:
+    st.image("logo.jpg", width=250)
+except:
+    pass
+
 st.sidebar.title("⚙ Panel de Control")
 clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type="password")
 
@@ -65,7 +71,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             st.markdown(pregunta)
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
         
-        # Aquí conectaremos el cerebro de Gemini en el siguiente paso
+        # Aquí conectaremos el cerebro de Gemini en el próximo paso
         with st.chat_message("assistant"):
             respuesta_temporal = "Estoy procesando tu consulta. (El cerebro del Agente IA se conectará aquí en el próximo paso)."
             st.markdown(respuesta_temporal)
