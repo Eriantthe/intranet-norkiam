@@ -14,7 +14,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Solución para el Logo: Buscamos ambos formatos comunes
+# Solución para el Logo: Buscamos ambos formatos comunes (.png y .jpg)
 try:
     st.image("logo.png", width=300)
 except:
@@ -31,7 +31,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Motor IA blindado: Usa el modelo exigido y reintenta si hay saturación (503)
+    # Motor IA blindado: Usa el modelo exigido y maneja la saturación y los límites gratuitos
     def llamar_gemini(prompt):
         for intento in range(4): # 4 intentos para atravesar la alta demanda
             try:
@@ -43,6 +43,10 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 if "503" in error_msg or "UNAVAILABLE" in error_msg:
                     time.sleep(3) 
                     continue
+                # Si alcanzaste el límite gratuito de velocidad (429)
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    return "⏳ ¡Uy! Has hecho muchas consultas seguidas y alcanzamos el límite de velocidad del servidor gratuito. Por favor, espera 1 minuto exacto y vuelve a intentarlo."
+                
                 return f"Lo siento, ocurrió un error técnico: {error_msg}"
         
         return "El servidor de IA está experimentando un pico de alta demanda inusual. Por favor, intenta de nuevo en 1 minuto."
