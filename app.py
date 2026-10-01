@@ -3,7 +3,6 @@ import sqlite3
 import pandas as pd
 import json
 import io
-import time
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
@@ -26,6 +25,7 @@ def inicializar_base_datos():
             estado_asistencia TEXT
         )
     ''')
+    # Tabla para recordar qué PDFs ya se leyeron
     c.execute('''
         CREATE TABLE IF NOT EXISTS archivos_procesados (
             id_archivo TEXT PRIMARY KEY,
@@ -33,6 +33,7 @@ def inicializar_base_datos():
         )
     ''')
     
+    # Datos de prueba iniciales (solo si está vacía) para probar sin esperar
     c.execute("SELECT COUNT(*) FROM registro_asistencia")
     if c.fetchone()[0] == 0:
         datos_prueba = [
@@ -74,7 +75,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # 3. SINCRONIZACIÓN AUTÓNOMA
+    # 3. SINCRONIZACIÓN AUTÓNOMA (Se ejecuta una sola vez al entrar)
     if "drive_sincronizado" not in st.session_state:
         with st.spinner("Verificando nuevos registros en Drive..."):
             try:
@@ -94,9 +95,14 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 conn = sqlite3.connect('norkiam.db')
                 c = conn.cursor()
                 
+                nuevos_archivos = 0
                 for archivo in archivos:
+                    # Verifica si el archivo ya fue procesado antes
                     c.execute("SELECT id_archivo FROM archivos_procesados WHERE id_archivo = ?", (archivo['id'],))
                     if not c.fetchone():
+                        nuevos_archivos += 1
+                        st.info(f"📄 Analizando nuevo documento: {archivo['name']} (Esto puede tardar unos minutos...)")
+                        
                         request = drive_service.files().get_media(fileId=archivo['id'])
                         fh = io.BytesIO()
                         downloader = MediaIoBaseDownload(fh, request)
@@ -109,27 +115,30 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         Extrae los registros de asistencia. Devuelve ÚNICAMENTE un arreglo JSON con:
                         [{"fecha": "YYYY-MM-DD", "turno": "Día/Noche", "area": "...", "nombre_completo": "...", "hora_entrada": "...", "hora_salida": "...", "estado_asistencia": "Presente/FALTA/Descanso/Permiso"}]
                         """
+                        respuesta = client.models.generate_content(model='gemini-3.8-flash', contents=[documento, instruccion])
+                        texto_json = respuesta.text.strip().replace('```json', '').replace('```', '')
                         
-                        respuesta = client.models.generate_content(model='gemini-1.5-flash', contents=[documento, instruccion])
-                        if respuesta:
-                            texto_json = respuesta.text.strip().replace('```json', '').replace('```', '')
-                            datos_extraidos = json.loads(texto_json)
-                            for fila in datos_extraidos:
-                                c.execute('''INSERT INTO registro_asistencia 
-                                             (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
-                                             VALUES (?,?,?,?,?,?,?)''', 
-                                          (fila.get('fecha'), fila.get('turno'), fila.get('area'), fila.get('nombre_completo'), 
-                                           fila.get('hora_entrada'), fila.get('hora_salida'), fila.get('estado_asistencia')))
-                            
-                            c.execute("INSERT INTO archivos_procesados (id_archivo, nombre_archivo) VALUES (?, ?)", (archivo['id'], archivo['name']))
-                            conn.commit()
+                        datos_extraidos = json.loads(texto_json)
+                        for fila in datos_extraidos:
+                            c.execute('''INSERT INTO registro_asistencia 
+                                         (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
+                                         VALUES (?,?,?,?,?,?,?)''', 
+                                      (fila.get('fecha'), fila.get('turno'), fila.get('area'), fila.get('nombre_completo'), 
+                                       fila.get('hora_entrada'), fila.get('hora_salida'), fila.get('estado_asistencia')))
+                        
+                        # Marca el archivo como procesado
+                        c.execute("INSERT INTO archivos_procesados (id_archivo, nombre_archivo) VALUES (?, ?)", (archivo['id'], archivo['name']))
+                        conn.commit()
                         
                 conn.close()
                 st.session_state.drive_sincronizado = True
+                if nuevos_archivos > 0:
+                    st.success(f"✅ {nuevos_archivos} nuevos documentos procesados y añadidos a la base de datos.")
             except Exception as e:
-                st.session_state.drive_sincronizado = True
+                st.error(f"Error al verificar Drive: {e}")
+                st.session_state.drive_sincronizado = True # Evita bucles infinitos de error
 
-    # 4. INTERFAZ DE CHAT
+    # 4. INTERFAZ DE CHAT Y CÁLCULO DE PLANILLAS
     st.title("💬 Asistente de Datos Norkiam")
     st.write("Pregúntame sobre el historial de asistencias o cálculos de planillas quincenales.")
     
@@ -148,34 +157,30 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
         
         with st.chat_message("assistant"):
-            with st.spinner("Analizando consulta y consultando base de datos..."):
+            with st.spinner("Buscando en la base de datos..."):
                 try:
+                    # REGLAS SQL ACTUALIZADAS PARA EVITAR EL ERROR DE 'MONTH'
                     prompt_sql = f"""
                     Eres el traductor SQL de Norkiam. 
                     Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
-                    Pregunta del usuario: "{pregunta}"
-                    Genera ÚNICAMENTE una consulta SELECT de SQL válida para SQLite que responda esto.
+                    Pregunta: "{pregunta}"
+                    Genera ÚNICAMENTE la consulta SQL para responder esto. 
                     
-                    REGLAS:
-                    1. Si piden faltas, incluye WHERE estado_asistencia LIKE '%FALTA%'.
-                    2. Si mencionan un nombre, usa LIKE para buscar palabras clave (Ej: nombre_completo LIKE '%NARCISO%').
-                    3. No uses funciones de fecha complejas (nada de MONTH o YEAR). Si mencionan julio o una fecha, filtra usando fecha LIKE '%-07-%' o BETWEEN.
-                    4. Devuelve ÚNICAMENTE el código SQL puro, sin bloques markdown ni texto adicional.
+                    REGLAS VITALES Y ESTRICTAS:
+                    1. Divide el nombre en palabras y usa LIKE separadas por AND (Ej: LIKE '%NARCISO%').
+                    2. ES SINTAXIS SQLITE: ¡ESTÁ ESTRICTAMENTE PROHIBIDO USAR MONTH(), YEAR() O DAY()!
+                    3. Para buscar meses o quincenas usa formato texto. Ejemplo para julio: fecha LIKE '%-07-%'. Ejemplo para quincenas: fecha BETWEEN '2026-07-01' AND '2026-07-15'.
+                    4. No uses markdown. Solo el código SQL puro.
                     """
-                    
-                    respuesta_sql = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_sql)
+                    respuesta_sql = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_sql)
                     query_limpia = respuesta_sql.text.strip().replace('```sql', '').replace('```', '')
-                    
-                    # Limpieza por si la IA devuelve texto extra accidentalmente
-                    if not query_limpia.upper().startswith("SELECT"):
-                        query_limpia = "SELECT * FROM registro_asistencia"
                     
                     conn = sqlite3.connect('norkiam.db')
                     df = pd.read_sql_query(query_limpia, conn)
                     conn.close()
                     
                     if df.empty:
-                        respuesta_final = "No encontré registros que coincidan con esa consulta en la base de datos."
+                        respuesta_final = "No encontré registros en la base de datos para esa consulta. Revisa si el nombre está escrito correctamente o si el archivo correspondiente ya se subió a Drive."
                     else:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
@@ -184,21 +189,18 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         {datos_texto}
                         
                         Instrucciones:
-                        1. Responde de forma natural y corporativa.
-                        2. Muestra los resultados en una tabla Markdown limpia.
-                        3. Haz los cálculos necesarios si pidieron resúmenes o totales de faltas/asistencias.
+                        1. Responde de forma natural, corporativa y amable.
+                        2. Si hay varios registros, muéstralos en una tabla Markdown limpia.
+                        3. Si el usuario solicita cálculos (quincenas, días asistidos, faltas), realiza el conteo exacto basándote EXCLUSIVAMENTE en los datos provistos y entrégale el reporte claro para planillas.
                         """
-                        
-                        respuesta_ia = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_resumen)
+                        respuesta_ia = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_resumen)
                         respuesta_final = respuesta_ia.text
                         
                     st.markdown(respuesta_final)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
                     
                 except Exception as e:
-                    error_msg = f"Error al procesar la consulta: {e}"
-                    st.error(error_msg)
-                    st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
+                    st.error(f"Lo siento, ocurrió un error técnico en la base de datos: {e}")
 
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta.")
