@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import time
 from google import genai
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
@@ -13,10 +14,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# Solución para el Logo: Buscamos ambos formatos comunes
 try:
-    st.image("logo.jpg", width=250)
+    st.image("logo.png", width=300)
 except:
-    pass
+    try:
+        st.image("logo.jpg", width=300)
+    except:
+        st.warning("⚠️ No se encontró el logo. Revisa si el archivo en tu carpeta se llama exactamente 'logo.png' o 'logo.jpg'.")
 
 st.sidebar.title("⚙ Panel de Control")
 clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type="password")
@@ -26,27 +31,21 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # LA IDEA DE NORELLY: CASCADA DE MODELOS (Model Fallback)
+    # Motor IA blindado: Usa el modelo exigido y reintenta si hay saturación (503)
     def llamar_gemini(prompt):
-        # Lista de modelos desde los más capaces hasta los clásicos de rescate
-        modelos_rescate = [
-            'gemini-1.5-pro',
-            'gemini-1.5-flash-8b',
-            'gemini-1.0-pro',
-            'gemini-pro'
-        ]
-        
-        for modelo in modelos_rescate:
+        for intento in range(4): # 4 intentos para atravesar la alta demanda
             try:
-                # Intenta con el modelo actual
-                response = client.models.generate_content(model=modelo, contents=prompt)
+                response = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
                 return response.text
-            except Exception:
-                # Si está lleno (503) o no existe (404), salta al siguiente inmediatamente
-                continue
-                
-        # Solo si absolutamente TODOS los modelos fallan, muestra este mensaje
-        return "Lo siento, todos los servidores de IA están saturados en este momento. Inténtalo de nuevo en unos segundos."
+            except Exception as e:
+                error_msg = str(e)
+                # Si el servidor está saturado (503), descansa 3 segundos y vuelve a intentar
+                if "503" in error_msg or "UNAVAILABLE" in error_msg:
+                    time.sleep(3) 
+                    continue
+                return f"Lo siento, ocurrió un error técnico: {error_msg}"
+        
+        return "El servidor de IA está experimentando un pico de alta demanda inusual. Por favor, intenta de nuevo en 1 minuto."
 
     @st.cache_data(ttl=10)
     def cargar_datos_sheet():
@@ -81,7 +80,8 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
 
         with st.chat_message("assistant"):
-            with st.spinner("Buscando en los registros con la IA..."):
+            # Si se demora, mostrará este mensaje mientras la IA hace los reintentos
+            with st.spinner("Analizando registros (esto puede tomar unos segundos extra si el servidor está lleno)..."):
                 datos_resumen = df_asistencia.to_csv(index=False)
                 
                 prompt_sistema = f"""
@@ -92,9 +92,9 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 Pregunta del usuario: "{pregunta}"
 
                 Instrucciones estrictas:
-                1. Revisa detenidamente los datos para dar una respuesta exacta basada en la fecha y nombres solicitados.
-                2. Si el usuario pregunta por faltas o asistencias de un día específico, busca todas las coincidencias en la columna de fechas.
-                3. Responde de manera profesional, clara y ordenada, usando tablas en Markdown si hay varios registros.
+                1. Revisa detenidamente los datos para dar una respuesta exacta.
+                2. Si el usuario pregunta por faltas, busca a los que tienen "FALTA" o "F" en estado_asistencia en esa fecha.
+                3. Responde de manera clara usando listas o tablas.
                 """
                 
                 respuesta_ia = llamar_gemini(prompt_sistema)
