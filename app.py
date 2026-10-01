@@ -1,57 +1,10 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import json
-import io
-import time
-import re
 from google import genai
-from google.genai import types
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 
-# 1. INICIALIZAR BASE DE DATOS Y MEMORIA
-def inicializar_base_datos():
-    conn = sqlite3.connect('norkiam.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS registro_asistencia (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fecha DATE,
-            turno TEXT,
-            area TEXT,
-            nombre_completo TEXT,
-            hora_entrada TEXT,
-            hora_salida TEXT,
-            estado_asistencia TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS archivos_procesados (
-            id_archivo TEXT PRIMARY KEY,
-            nombre_archivo TEXT
-        )
-    ''')
-    
-    # Datos de prueba
-    c.execute("SELECT COUNT(*) FROM registro_asistencia")
-    if c.fetchone()[0] == 0:
-        datos_prueba = [
-            ('2026-07-01', 'Día', 'APO', 'GARCIA FUENTES LUZ MARIA', '6:40', '15:00', 'Presente'),
-            ('2026-07-01', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '19:00', '7:00', 'Presente'),
-            ('2026-07-02', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '', '', 'FALTA'),
-            ('2026-07-03', 'Noche', 'AA', 'AGUILAR DOLORES NARCISO GASPAR', '', '', 'FALTA')
-        ]
-        c.executemany('''INSERT INTO registro_asistencia 
-                         (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
-                         VALUES (?,?,?,?,?,?,?)''', datos_prueba)
-    conn.commit()
-    conn.close()
-
-inicializar_base_datos()
-
-# 2. DISEÑO DE LA INTRANET
+# 1. DISEÑO DE LA INTRANET
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
 
 st.markdown("""
@@ -76,180 +29,77 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Función de Inteligencia Artificial Blindada
-    def llamar_gemini_blindado(prompt_o_lista):
-        modelos_disponibles = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
-        ultimo_error = None
-        for modelo in modelos_disponibles:
-            for intento in range(3):
-                try:
-                    return client.models.generate_content(model=modelo, contents=prompt_o_lista)
-                except Exception as e:
-                    ultimo_error = e
-                    if "503" in str(e):
-                        time.sleep(3)
-                        continue
-                    elif "404" in str(e):
-                        break
-                    else:
-                        break
-        raise Exception(f"Último error: {ultimo_error}")
-    
-    # 3. VERIFICACIÓN ULTRA RÁPIDA (Solo toma 1 segundo)
-    if "inicio_rapido" not in st.session_state:
-        st.session_state.mensajes = []
-        st.session_state.archivos_pendientes = []
-        
-        try:
-            credenciales_dict = json.loads(st.secrets["CREDENCIALES_DRIVE"])
-            creds = service_account.Credentials.from_service_account_info(
-                credenciales_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
-            )
-            drive_service = build('drive', 'v3', credentials=creds)
-            carpeta_id = st.secrets["CARPETA_DRIVE"]
-            
-            # Solo lee los nombres, no el contenido (es instantáneo)
-            resultados = drive_service.files().list(
-                q=f"'{carpeta_id}' in parents and trashed=false and mimeType='application/pdf'",
-                fields="files(id, name)"
-            ).execute()
-            archivos = resultados.get('files', [])
-            
-            conn = sqlite3.connect('norkiam.db')
-            c = conn.cursor()
-            pendientes = []
-            for archivo in archivos:
-                c.execute("SELECT id_archivo FROM archivos_procesados WHERE id_archivo = ?", (archivo['id'],))
-                if not c.fetchone():
-                    pendientes.append(archivo)
-            conn.close()
-            
-            st.session_state.archivos_pendientes = pendientes
-            
-            # El Chatbot decide cómo saludarte dependiendo si hay trabajo pendiente o no
-            if pendientes:
-                st.session_state.mensajes.append({
-                    "rol": "assistant",
-                    "contenido": f"🔔 **Aviso:** He detectado {len(pendientes)} nuevo(s) documento(s) en Drive. Para no congelar tu pantalla, no los he leído aún. Cuando desees que me tome los minutos necesarios para procesarlos, simplemente escribe en el chat la palabra **sincronizar**."
-                })
-            else:
-                st.session_state.mensajes.append({
-                    "rol": "assistant",
-                    "contenido": "👋 ¡Hola! Revisé Drive y la base de datos está al día. ¿Qué deseas consultar hoy?"
-                })
-                
-        except Exception as e:
-            st.session_state.mensajes.append({
-                "rol": "assistant",
-                "contenido": "👋 ¡Hola! La base de datos local está lista para tus consultas."
-            })
-            
-        st.session_state.inicio_rapido = True
+    # Función para llamar a Gemini con manejo de errores y múltiples modelos
+    def llamar_gemini(prompt):
+        modelos = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash']
+        for modelo in modelos:
+            try:
+                response = client.models.generate_content(model=modelo, contents=prompt)
+                return response.text
+            except Exception:
+                continue
+        return "Lo siento, en este momento el servicio de IA está experimentando alta demanda. Inténtalo de nuevo."
 
-    # 4. CHATBOT CORPORATIVO
+    # 2. CARGA ULTRA RÁPIDA DESDE EL GOOGLE SHEET MAESTRO
+    @st.cache_data(ttl=60) # Cache de 1 minuto para que vuele
+    pasa_cache = True
+    def cargar_datos_sheet():
+        try:
+            # Leemos tu Google Sheet usando pandas directamente mediante su enlace público CSV o credenciales
+            # Asegúrate de que tu Google Sheet esté configurado como "Cualquier persona con el enlace puede ver"
+            sheet_id = st.secrets["ID_GOOGLE_SHEET"]
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            df = pd.read_csv(url)
+            return df
+        except Exception as e:
+            # Si hubiera algún problema con el enlace, devolvemos un DataFrame vacío con las columnas base
+            return pd.DataFrame(columns=["fecha", "turno", "area", "nombre_completo", "hora_entrada", "hora_salida", "estado_asistencia"])
+
+    df_asistencia = cargar_datos_sheet()
+
+    # 3. INTERFAZ DEL CHATBOT
     st.title("💬 Asistente de Datos Norkiam")
-    
+    st.markdown("Pregúntame sobre asistencias, faltas, turnos o tardanzas del personal con total libertad.")
+
+    if "mensajes" not in st.session_state:
+        st.session_state.mensajes = [
+            {"rol": "assistant", "contenido": "👋 ¡Hola, Norelly! La Base de Datos Maestra de Huaral está sincronizada y lista. ¿Qué deseas consultar hoy?"}
+        ]
+
     for mensaje in st.session_state.mensajes:
         with st.chat_message(mensaje["rol"]):
             st.markdown(mensaje["contenido"])
 
-    pregunta = st.chat_input("Escribe tu consulta, o escribe 'sincronizar' para actualizar la base de datos...")
-    
+    pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 17 de agosto? o ¿Cuál es el récord de Narciso Aguilar?")
+
     if pregunta:
-        # Mostramos lo que escribió el usuario
         with st.chat_message("user"):
             st.markdown(pregunta)
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
-        
-        # --- COMANDO ESPECIAL: SINCRONIZAR ---
-        if "sincronizar" in pregunta.lower():
-            with st.chat_message("assistant"):
-                if not st.session_state.archivos_pendientes:
-                    respuesta = "No hay archivos nuevos pendientes en Drive. Todo está al día. ✅"
-                    st.markdown(respuesta)
-                    st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta})
-                else:
-                    with st.spinner("🤖 Leyendo PDFs con Visión Artificial. Esto puede tomar unos minutos, ve por un café..."):
-                        try:
-                            credenciales_dict = json.loads(st.secrets["CREDENCIALES_DRIVE"])
-                            creds = service_account.Credentials.from_service_account_info(
-                                credenciales_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
-                            )
-                            drive_service = build('drive', 'v3', credentials=creds)
-                            
-                            conn = sqlite3.connect('norkiam.db')
-                            c = conn.cursor()
-                            
-                            for archivo in st.session_state.archivos_pendientes:
-                                request = drive_service.files().get_media(fileId=archivo['id'])
-                                fh = io.BytesIO()
-                                downloader = MediaIoBaseDownload(fh, request)
-                                done = False
-                                while not done:
-                                    status, done = downloader.next_chunk()
-                                    
-                                documento = types.Part.from_bytes(data=fh.getvalue(), mime_type='application/pdf')
-                                instruccion = """
-                                Extrae los registros de asistencia. Devuelve ÚNICAMENTE un JSON puro con este formato exacto, sin markdown:
-                                [{"fecha": "2026-07-01", "turno": "Día", "area": "AA", "nombre_completo": "NOMBRE APELLIDO", "hora_entrada": "07:00", "hora_salida": "19:00", "estado_asistencia": "Presente"}]
-                                """
-                                
-                                respuesta_ia = llamar_gemini_blindado([documento, instruccion])
-                                texto_limpio = re.sub(r'```json|```', '', respuesta_ia.text).strip()
-                                datos_extraidos = json.loads(texto_limpio)
-                                
-                                for fila in datos_extraidos:
-                                    c.execute('''INSERT INTO registro_asistencia 
-                                                 (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
-                                                 VALUES (?,?,?,?,?,?,?)''', 
-                                              (fila.get('fecha'), fila.get('turno'), fila.get('area'), fila.get('nombre_completo'), 
-                                               fila.get('hora_entrada'), fila.get('hora_salida'), fila.get('estado_asistencia')))
-                                
-                                c.execute("INSERT INTO archivos_procesados (id_archivo, nombre_archivo) VALUES (?, ?)", (archivo['id'], archivo['name']))
-                                conn.commit()
-                                
-                            conn.close()
-                            st.session_state.archivos_pendientes = [] # Limpiamos la lista
-                            
-                            respuesta_final = "✅ ¡Listo! He terminado de leer todos los documentos y tu base de datos ha sido actualizada."
-                            st.success(respuesta_final)
-                            st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
-                        except Exception as e:
-                            st.error(f"Error procesando los PDFs: {e}")
-        
-        # --- CONSULTAS NORMALES DE SQL ---
-        else:
-            with st.chat_message("assistant"):
-                with st.spinner("Procesando consulta..."):
-                    try:
-                        prompt_sql = f"""
-                        Actúas como un motor SQL estricto para SQLite. Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
-                        Pregunta: "{pregunta}"
-                        Reglas: 1. Devuelve ÚNICAMENTE la consulta SQL que empiece con SELECT. 2. Usa LIKE '%PALABRA%' para nombres. 3. Para faltas, usa LIKE '%FALTA%'.
-                        """
-                        respuesta_sql = llamar_gemini_blindado(prompt_sql)
-                        texto_ia = respuesta_sql.text.replace('```sql', '').replace('```', '').strip()
-                        inicio_select = texto_ia.upper().find('SELECT')
-                        query_limpia = texto_ia[inicio_select:].rstrip(';') if inicio_select != -1 else "SELECT * FROM registro_asistencia LIMIT 1"
-                        
-                        conn = sqlite3.connect('norkiam.db')
-                        df = pd.read_sql_query(query_limpia, conn)
-                        conn.close()
-                        
-                        if df.empty:
-                            respuesta_final = "No encontré registros exactos en la base de datos."
-                        else:
-                            datos_texto = df.to_csv(index=False)
-                            prompt_resumen = f"Datos obtenidos: {datos_texto}\nPregunta: {pregunta}\nResponde profesionalmente con una tabla Markdown y haz cálculos si es necesario."
-                            respuesta_ia = llamar_gemini_blindado(prompt_resumen)
-                            respuesta_final = respuesta_ia.text
-                            
-                        st.markdown(respuesta_final)
-                        st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
-                    except Exception as e:
-                        st.error(f"Error técnico detectado: {e}")
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analizando datos..."):
+                # Convertimos una muestra de los datos a texto para que la IA los analice y responda con precisión
+                datos_resumen = df_asistencia.to_csv(index=False)
+                
+                prompt_sistema = f"""
+                Actúas como el asistente de recursos humanos de la empresa Norkiam SAC.
+                Tienes acceso a la siguiente base de datos de asistencia en formato CSV:
+                {datos_resumen}
+
+                Pregunta del usuario: "{pregunta}"
+
+                Instrucciones:
+                1. Analiza los datos proporcionados para responder con precisión exacta.
+                2. Si el usuario pide faltas, lista los nombres y fechas correspondientes.
+                3. Responde de manera profesional, clara y ordenada, utilizando tablas en Markdown cuando sea útil.
+                """
+                
+                respuesta_ia = llamar_gemini(prompt_sistema)
+                st.markdown(respuesta_ia)
+                st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_ia})
 
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta.")
 else:
-    st.info("👈 Por favor, ingresa la clave corporativa.")
+    st.info("👈 Por favor, ingresa la clave corporativa para acceder al sistema.")
