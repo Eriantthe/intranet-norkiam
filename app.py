@@ -34,7 +34,7 @@ def inicializar_base_datos():
         )
     ''')
     
-    # Datos de prueba iniciales
+    # Datos de prueba para que la tabla no esté vacía al iniciar
     c.execute("SELECT COUNT(*) FROM registro_asistencia")
     if c.fetchone()[0] == 0:
         datos_prueba = [
@@ -76,16 +76,27 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Función auxiliar para llamar a Gemini con reintentos (Antichoque para el 503)
-    def llamar_gemini_con_reintento(prompt_o_lista, max_intentos=3):
-        for intento in range(max_intentos):
+    # --- NUEVO SISTEMA DE ESCUDO (MODEL FALLBACK) ---
+    def llamar_gemini_blindado(prompt_o_lista):
+        # Lista de modelos de élite. Si uno falla o no está autorizado, salta al siguiente silenciosamente.
+        modelos_disponibles = [
+            'gemini-1.5-pro',
+            'gemini-1.5-flash-002',
+            'gemini-1.5-pro-latest',
+            'gemini-2.0-flash-exp',
+            'gemini-pro'
+        ]
+        ultimo_error = None
+        
+        for modelo in modelos_disponibles:
             try:
-                # Volvemos al modelo oficial seguro
-                return client.models.generate_content(model='gemini-1.5-flash', contents=prompt_o_lista)
+                return client.models.generate_content(model=modelo, contents=prompt_o_lista)
             except Exception as e:
-                if intento == max_intentos - 1:
-                    raise e
-                time.sleep(3) # Espera 3 segundos antes de volver a intentar
+                ultimo_error = e
+                continue # Falla silenciosamente y prueba el siguiente modelo de la lista
+        
+        # Si todos fallan (muy improbable), mostramos el error
+        raise Exception(f"No se pudo conectar a ningún modelo de Gemini. Detalle: {ultimo_error}")
     
     # 3. SINCRONIZACIÓN AUTÓNOMA SILENCIOSA
     if "drive_sincronizado" not in st.session_state:
@@ -124,7 +135,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         """
                         
                         try:
-                            respuesta = llamar_gemini_con_reintento([documento, instruccion])
+                            respuesta = llamar_gemini_blindado([documento, instruccion])
                             texto_limpio = re.sub(r'```json|```', '', respuesta.text).strip()
                             datos_extraidos = json.loads(texto_limpio)
                             
@@ -144,7 +155,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 st.session_state.drive_sincronizado = True
             except Exception as e:
                 st.session_state.drive_sincronizado = True
-                st.sidebar.warning("Aviso: No se pudo conectar con Drive.")
+                st.sidebar.warning("Aviso: No se pudo conectar con Drive en este momento.")
 
     # 4. CHATBOT CORPORATIVO
     st.title("💬 Asistente de Datos Norkiam")
@@ -180,7 +191,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     4. NUNCA uses funciones como MONTH(), YEAR(), o DAY(). Usa LIKE '%-07-%' para meses o igualdades simples.
                     """
                     
-                    respuesta_sql = llamar_gemini_con_reintento(prompt_sql)
+                    respuesta_sql = llamar_gemini_blindado(prompt_sql)
                     
                     texto_ia = respuesta_sql.text.replace('```sql', '').replace('```', '').strip()
                     inicio_select = texto_ia.upper().find('SELECT')
@@ -197,7 +208,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     conn.close()
                     
                     if df.empty:
-                        respuesta_final = "No encontré registros en la base de datos para esa consulta. Intenta buscar por el apellido principal."
+                        respuesta_final = "No encontré registros exactos en la base de datos para esa consulta. Intenta buscar por el apellido principal."
                     else:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
@@ -211,7 +222,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         3. Haz el cálculo si piden sumatorias.
                         """
                         
-                        respuesta_ia = llamar_gemini_con_reintento(prompt_resumen)
+                        respuesta_ia = llamar_gemini_blindado(prompt_resumen)
                         respuesta_final = respuesta_ia.text
                         
                     st.markdown(respuesta_final)
