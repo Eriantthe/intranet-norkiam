@@ -4,13 +4,14 @@ import pandas as pd
 import json
 import io
 import time
+import re
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# 1. INICIALIZAR BASE DE DATOS Y MEMORIA DE ARCHIVOS
+# 1. INICIALIZAR BASE DE DATOS Y MEMORIA
 def inicializar_base_datos():
     conn = sqlite3.connect('norkiam.db')
     c = conn.cursor()
@@ -33,6 +34,7 @@ def inicializar_base_datos():
         )
     ''')
     
+    # Datos de prueba para que puedas usar el chat inmediatamente
     c.execute("SELECT COUNT(*) FROM registro_asistencia")
     if c.fetchone()[0] == 0:
         datos_prueba = [
@@ -74,9 +76,9 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # 3. SINCRONIZACIÓN AUTÓNOMA CON PROTECCIÓN 503
+    # 3. SINCRONIZACIÓN AUTÓNOMA SILENCIOSA
     if "drive_sincronizado" not in st.session_state:
-        with st.spinner("Verificando nuevos registros en Drive..."):
+        with st.spinner("Sincronizando archivos corporativos..."):
             try:
                 credenciales_dict = json.loads(st.secrets["CREDENCIALES_DRIVE"])
                 creds = service_account.Credentials.from_service_account_info(
@@ -106,22 +108,16 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                             
                         documento = types.Part.from_bytes(data=fh.getvalue(), mime_type='application/pdf')
                         instruccion = """
-                        Extrae los registros de asistencia. Devuelve ÚNICAMENTE un arreglo JSON con:
-                        [{"fecha": "YYYY-MM-DD", "turno": "Día/Noche", "area": "...", "nombre_completo": "...", "hora_entrada": "...", "hora_salida": "...", "estado_asistencia": "Presente/FALTA/Descanso/Permiso"}]
+                        Extrae los registros de asistencia. Devuelve ÚNICAMENTE un JSON puro con este formato exacto, sin markdown ni explicaciones:
+                        [{"fecha": "2026-07-01", "turno": "Día", "area": "AA", "nombre_completo": "NOMBRE APELLIDO", "hora_entrada": "07:00", "hora_salida": "19:00", "estado_asistencia": "Presente"}]
                         """
                         
-                        # Intento con reintento automático si falla por 503
-                        respuesta = None
-                        for intento in range(3):
-                            try:
-                                respuesta = client.models.generate_content(model='gemini-3.8-flash', contents=[documento, instruccion])
-                                break
-                            except Exception:
-                                time.sleep(2)
-                                
-                        if respuesta:
-                            texto_json = respuesta.text.strip().replace('```json', '').replace('```', '')
-                            datos_extraidos = json.loads(texto_json)
+                        try:
+                            respuesta = client.models.generate_content(model='gemini-1.5-flash', contents=[documento, instruccion])
+                            # Limpieza agresiva del JSON
+                            texto_limpio = re.sub(r'```json|```', '', respuesta.text).strip()
+                            datos_extraidos = json.loads(texto_limpio)
+                            
                             for fila in datos_extraidos:
                                 c.execute('''INSERT INTO registro_asistencia 
                                              (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia) 
@@ -131,13 +127,17 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                             
                             c.execute("INSERT INTO archivos_procesados (id_archivo, nombre_archivo) VALUES (?, ?)", (archivo['id'], archivo['name']))
                             conn.commit()
-                        
+                        except Exception as e:
+                            # Si falla un PDF, no rompe la app, solo lo ignora y avisa en la terminal
+                            print(f"Error procesando {archivo['name']}: {e}")
+                            
                 conn.close()
                 st.session_state.drive_sincronizado = True
             except Exception as e:
                 st.session_state.drive_sincronizado = True
+                st.sidebar.warning("Aviso: No se pudo conectar con Drive en este momento.")
 
-    # 4. INTERFAZ DE CHAT
+    # 4. CHATBOT CORPORATIVO
     st.title("💬 Asistente de Datos Norkiam")
     st.write("Pregúntame sobre el historial de asistencias o cálculos de planillas quincenales.")
     
@@ -156,63 +156,58 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
         
         with st.chat_message("assistant"):
-            with st.spinner("Analizando consulta y consultando base de datos..."):
+            with st.spinner("Procesando consulta..."):
                 try:
                     prompt_sql = f"""
-                    Eres el traductor SQL de Norkiam. 
+                    Actúas como un motor SQL estricto para SQLite. 
                     Tabla: registro_asistencia (fecha, turno, area, nombre_completo, hora_entrada, hora_salida, estado_asistencia)
-                    Pregunta del usuario: "{pregunta}"
-                    Genera ÚNICAMENTE una consulta SQL válida para SQLite que responda esto.
+                    Pregunta: "{pregunta}"
                     
-                    REGLAS ESTRICTAS:
-                    1. Si la pregunta es general o no especifica nombre, haz un SELECT general filtrando por fechas o estados si aplica (Ej: SELECT * FROM registro_asistencia WHERE estado_asistencia = 'FALTA').
-                    2. Si especifica nombre, usa LIKE para buscar palabras clave.
-                    3. ESTÁ PROHIBIDO usar MONTH(), YEAR() o DAY(). Usa formato fecha 'YYYY-MM-DD' o BETWEEN.
-                    4. No uses markdown ni explicaciones. Solo el código SQL puro.
+                    Reglas inquebrantables:
+                    1. Devuelve ÚNICAMENTE la consulta SQL que empiece con SELECT.
+                    2. No uses markdown (```sql). No des explicaciones ni saludos.
+                    3. Si buscan un nombre, divídelo y usa: nombre_completo LIKE '%PALABRA1%' AND nombre_completo LIKE '%PALABRA2%'.
+                    4. Para faltas, usa: estado_asistencia LIKE '%FALTA%'.
+                    5. NUNCA uses MONTH(), YEAR(), o DAY(). Usa LIKE '%-07-%' para meses.
                     """
                     
-                    # Llamada a Gemini con reintento automático ante el error 503
-                    respuesta_sql = None
-                    for intento in range(3):
-                        try:
-                            respuesta_sql = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_sql)
-                            break
-                        except Exception:
-                            time.sleep(2)
-                            
-                    if not respuesta_sql:
-                        raise Exception("Los servidores de Google están experimentando alta demanda en este momento. Por favor, intenta de nuevo en unos segundos.")
-                        
-                    query_limpia = respuesta_sql.text.strip().replace('```sql', '').replace('```', '')
+                    respuesta_sql = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_sql)
+                    
+                    # Extracción inteligente del SQL (Ignora si la IA habla de más)
+                    match = re.search(r'SELECT.*', respuesta_sql.text, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        query_limpia = match.group(0).replace('```', '').replace(';', '').strip()
+                    else:
+                        query_limpia = "SELECT * FROM registro_asistencia LIMIT 10" # Fallback seguro
                     
                     conn = sqlite3.connect('norkiam.db')
                     df = pd.read_sql_query(query_limpia, conn)
                     conn.close()
                     
                     if df.empty:
-                        respuesta_final = "No encontré registros que coincidan con esa consulta en la base de datos."
+                        respuesta_final = "No encontré registros exactos en la base de datos para esa consulta. Intenta usar menos palabras o buscar solo por el apellido."
                     else:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
-                        El usuario preguntó: "{pregunta}". 
-                        Datos obtenidos:
+                        Pregunta original: "{pregunta}". 
+                        Datos filtrados obtenidos:
                         {datos_texto}
                         
                         Instrucciones:
-                        1. Responde de forma natural y corporativa.
-                        2. Muestra los resultados en una tabla Markdown limpia.
-                        3. Haz los cálculos necesarios si pidieron resúmenes o totales.
+                        1. Responde de forma profesional.
+                        2. Muestra los resultados siempre en una tabla Markdown atractiva.
+                        3. Si se piden sumatorias, resúmenes o días asistidos, realiza el cálculo exacto basado en la tabla proporcionada.
                         """
                         
-                        respuesta_ia = client.models.generate_content(model='gemini-3.8-flash', contents=prompt_resumen)
+                        respuesta_ia = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_resumen)
                         respuesta_final = respuesta_ia.text
                         
                     st.markdown(respuesta_final)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
                     
                 except Exception as e:
-                    error_msg = f"Aviso del sistema: {e}"
-                    st.warning(error_msg)
+                    error_msg = "Ocurrió un error temporal procesando los datos. Por favor, intenta formular la pregunta de otra manera."
+                    st.error(error_msg)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
 
 elif clave_ingresada:
