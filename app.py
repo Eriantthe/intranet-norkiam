@@ -27,17 +27,18 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Motor IA blindado: usa el modelo más veloz y reintenta si hay error 503
+    # Motor IA blindado: usa el modelo exigido (3.8-flash) y reintenta si hay saturación (503)
     def llamar_gemini(prompt):
         for intento in range(3):
             try:
-                response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+                response = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
                 return response.text
             except Exception as e:
-                if "503" in str(e):
-                    time.sleep(2) # Espera 2 segundos y vuelve a intentar
+                error_msg = str(e)
+                if "503" in error_msg or "UNAVAILABLE" in error_msg:
+                    time.sleep(2) # Si está saturado, espera 2 segundos y ataca de nuevo
                     continue
-                return f"Lo siento, ocurrió un error de conexión: {str(e)}"
+                return f"Lo siento, ocurrió un error: {error_msg}"
         return "El servidor de IA está muy solicitado en este momento. Por favor, vuelve a intentar tu pregunta en unos segundos."
 
     @st.cache_data(ttl=10)
@@ -65,7 +66,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         with st.chat_message(mensaje["rol"]):
             st.markdown(mensaje["contenido"])
 
-    pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 18 de agosto?")
+    pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 19 de agosto?")
 
     if pregunta:
         with st.chat_message("user"):
