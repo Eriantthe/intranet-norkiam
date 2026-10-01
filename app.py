@@ -48,10 +48,14 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 return f"Lo siento, ocurrió un error técnico: {error_msg}"
         return "El servidor de IA está experimentando alta demanda. Intenta de nuevo en 1 minuto."
 
-    # ----- LA MAGIA DE LA OPCIÓN 1: OPTIMIZADOR DE MEMORIA -----
+    # ----- LA MAGIA DE LA OPCIÓN 1: BÚSQUEDA UNIVERSAL (ANTI-ERRORES) -----
     def optimizar_datos_para_ia(df, pregunta):
         pregunta_lower = pregunta.lower().replace('?', '').replace('¿', '').replace(',', '')
         df_filtrado = df.copy()
+        
+        # TRUCO MAESTRO: Convierte todas las columnas en texto corrido. 
+        # Así no importa si la columna se llama "Fecha", "fecha " o si no hay encabezado.
+        texto_filas = df_filtrado.fillna('').astype(str).agg(' '.join, axis=1).str.lower()
         
         # 1. Filtro inteligente por Fecha (Días)
         numeros = re.findall(r'\b\d{1,2}\b', pregunta_lower)
@@ -59,11 +63,13 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             mask_fecha = pd.Series(False, index=df_filtrado.index)
             for num in numeros:
                 dia = num.zfill(2) # Convierte "19" a "19", o "5" a "05"
-                mask_fecha = mask_fecha | df_filtrado['fecha'].astype(str).str.contains(f"-{dia}")
+                # Busca -19 o /19 en cualquier parte de la fila
+                mask_fecha = mask_fecha | texto_filas.str.contains(f"-{dia}") | texto_filas.str.contains(f"/{dia}")
             if mask_fecha.any():
                 df_filtrado = df_filtrado[mask_fecha]
+                texto_filas = texto_filas[mask_fecha] # Actualizamos el texto para el siguiente filtro
 
-        # 2. Filtro inteligente por Nombres 
+        # 2. Filtro inteligente por Nombres / Palabras
         palabras_comunes = ['quien', 'quienes', 'falto', 'faltaron', 'asistio', 'asistieron', 
                             'dime', 'cuales', 'cual', 'agosto', 'mes', 'dia', 'todas', 'todos', 'del', 'los', 'las']
         palabras_clave = [p for p in pregunta_lower.split() if len(p) > 3 and p not in palabras_comunes]
@@ -71,16 +77,16 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         if palabras_clave:
             mask_nombre = pd.Series(False, index=df_filtrado.index)
             for palabra in palabras_clave:
-                mask_nombre = mask_nombre | df_filtrado['nombre_completo'].str.lower().str.contains(palabra, na=False)
+                mask_nombre = mask_nombre | texto_filas.str.contains(palabra)
             if mask_nombre.any():
                 df_filtrado = df_filtrado[mask_nombre]
 
-        # 3. Seguro Anti-Colapso: Si la pregunta es muy abierta y no filtró nada, envía máximo 1500 filas
+        # 3. Seguro Anti-Colapso
         if len(df_filtrado) > 1500:
             df_filtrado = df_filtrado.tail(1500)
             
         return df_filtrado
-    # -----------------------------------------------------------
+    # ---------------------------------------------------------------------
 
     @st.cache_data(ttl=10)
     def cargar_datos_sheet():
@@ -91,7 +97,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             return df
         except Exception as e:
             st.error(f"Error al leer el Google Sheet: {e}")
-            return pd.DataFrame(columns=["fecha", "turno", "area", "nombre_completo", "hora_entrada", "hora_salida", "estado_asistencia"])
+            return pd.DataFrame()
 
     df_asistencia = cargar_datos_sheet()
 
@@ -117,7 +123,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         with st.chat_message("assistant"):
             with st.spinner("Filtrando datos en milisegundos..."):
                 
-                # ¡Aplicamos el filtro ANTES de llamar a la IA!
+                # Filtramos la tabla sin importar los nombres de las columnas
                 df_optimizado = optimizar_datos_para_ia(df_asistencia, pregunta)
                 datos_resumen = df_optimizado.to_csv(index=False)
                 
@@ -137,7 +143,6 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 respuesta_ia = llamar_gemini(prompt_sistema)
                 st.markdown(respuesta_ia)
                 
-                # Esto es un detalle visual genial para que tú y tu papá vean cuánto ahorró el filtro:
                 st.caption(f"⚡ Optimizador de memoria: La IA analizó solo {len(df_optimizado)} registros relevantes en lugar de los {len(df_asistencia)} totales.")
                 
                 st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_ia})
