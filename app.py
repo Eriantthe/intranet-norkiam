@@ -4,7 +4,6 @@ import pandas as pd
 import json
 import io
 import time
-import re
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
@@ -34,7 +33,6 @@ def inicializar_base_datos():
         )
     ''')
     
-    # Datos de prueba para que puedas usar el chat inmediatamente
     c.execute("SELECT COUNT(*) FROM registro_asistencia")
     if c.fetchone()[0] == 0:
         datos_prueba = [
@@ -114,8 +112,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         
                         try:
                             respuesta = client.models.generate_content(model='gemini-1.5-flash', contents=[documento, instruccion])
-                            # Limpieza agresiva del JSON
-                            texto_limpio = re.sub(r'```json|```', '', respuesta.text).strip()
+                            texto_limpio = respuesta.text.replace('```json', '').replace('```', '').strip()
                             datos_extraidos = json.loads(texto_limpio)
                             
                             for fila in datos_extraidos:
@@ -128,7 +125,6 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                             c.execute("INSERT INTO archivos_procesados (id_archivo, nombre_archivo) VALUES (?, ?)", (archivo['id'], archivo['name']))
                             conn.commit()
                         except Exception as e:
-                            # Si falla un PDF, no rompe la app, solo lo ignora y avisa en la terminal
                             print(f"Error procesando {archivo['name']}: {e}")
                             
                 conn.close()
@@ -157,6 +153,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         
         with st.chat_message("assistant"):
             with st.spinner("Procesando consulta..."):
+                query_limpia = ""
                 try:
                     prompt_sql = f"""
                     Actúas como un motor SQL estricto para SQLite. 
@@ -164,28 +161,32 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     Pregunta: "{pregunta}"
                     
                     Reglas inquebrantables:
-                    1. Devuelve ÚNICAMENTE la consulta SQL que empiece con SELECT.
-                    2. No uses markdown (```sql). No des explicaciones ni saludos.
-                    3. Si buscan un nombre, divídelo y usa: nombre_completo LIKE '%PALABRA1%' AND nombre_completo LIKE '%PALABRA2%'.
-                    4. Para faltas, usa: estado_asistencia LIKE '%FALTA%'.
-                    5. NUNCA uses MONTH(), YEAR(), o DAY(). Usa LIKE '%-07-%' para meses.
+                    1. Devuelve ÚNICAMENTE la consulta SQL. NADA DE TEXTO EXTRA.
+                    2. Si buscan un nombre, sepáralo y usa: nombre_completo LIKE '%PALABRA1%' AND nombre_completo LIKE '%PALABRA2%'.
+                    3. Para faltas, usa: estado_asistencia LIKE '%FALTA%'.
+                    4. NUNCA uses funciones como MONTH(), YEAR(), o DAY(). Usa LIKE '%-07-%' para meses o igualdades simples.
                     """
                     
                     respuesta_sql = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_sql)
                     
-                    # Extracción inteligente del SQL (Ignora si la IA habla de más)
-                    match = re.search(r'SELECT.*', respuesta_sql.text, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        query_limpia = match.group(0).replace('```', '').replace(';', '').strip()
+                    # Limpieza infalible: buscamos dónde dice SELECT y cortamos todo lo de atrás
+                    texto_ia = respuesta_sql.text.replace('```sql', '').replace('```', '').strip()
+                    inicio_select = texto_ia.upper().find('SELECT')
+                    
+                    if inicio_select != -1:
+                        query_limpia = texto_ia[inicio_select:]
                     else:
-                        query_limpia = "SELECT * FROM registro_asistencia LIMIT 10" # Fallback seguro
+                        query_limpia = "SELECT * FROM registro_asistencia LIMIT 1"
+                        
+                    # Quitamos el punto y coma si lo puso al final
+                    query_limpia = query_limpia.rstrip(';')
                     
                     conn = sqlite3.connect('norkiam.db')
                     df = pd.read_sql_query(query_limpia, conn)
                     conn.close()
                     
                     if df.empty:
-                        respuesta_final = "No encontré registros exactos en la base de datos para esa consulta. Intenta usar menos palabras o buscar solo por el apellido."
+                        respuesta_final = "No encontré registros exactos en la base de datos para esa consulta. Intenta buscar solo por el apellido."
                     else:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
@@ -196,7 +197,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         Instrucciones:
                         1. Responde de forma profesional.
                         2. Muestra los resultados siempre en una tabla Markdown atractiva.
-                        3. Si se piden sumatorias, resúmenes o días asistidos, realiza el cálculo exacto basado en la tabla proporcionada.
+                        3. Haz el cálculo si piden sumatorias.
                         """
                         
                         respuesta_ia = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_resumen)
@@ -206,7 +207,8 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
                     
                 except Exception as e:
-                    error_msg = "Ocurrió un error temporal procesando los datos. Por favor, intenta formular la pregunta de otra manera."
+                    # AQUÍ ESTÁ LA MAGIA: Ahora veremos el error real y la consulta que lo causó
+                    error_msg = f"**Error técnico detectado:** {e} \n\n **Consulta SQL generada:** `{query_limpia}`"
                     st.error(error_msg)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
 
