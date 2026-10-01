@@ -26,24 +26,24 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
+    # Usamos gemini-2.5-flash para garantizar velocidad instantánea y evitar errores 503
     def llamar_gemini(prompt):
-        modelos = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash']
-        for modelo in modelos:
-            try:
-                response = client.models.generate_content(model=modelo, contents=prompt)
-                return response.text
-            except Exception:
-                continue
-        return "Lo siento, en este momento el servicio de IA está experimentando alta demanda. Inténtalo de nuevo."
+        try:
+            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            return response.text
+        except Exception as e:
+            return f"Lo siento, ocurrió un error de conexión: {str(e)}"
 
-    @st.cache_data(ttl=60)
+    @st.cache_data(ttl=30)
     def cargar_datos_sheet():
         try:
             sheet_id = st.secrets["ID_GOOGLE_SHEET"]
-            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            # Usamos el formato de exportación CSV directo de la pestaña principal
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
             df = pd.read_csv(url)
             return df
-        except Exception:
+        except Exception as e:
+            st.error(f"Error al leer el Google Sheet: {e}")
             return pd.DataFrame(columns=["fecha", "turno", "area", "nombre_completo", "hora_entrada", "hora_salida", "estado_asistencia"])
 
     df_asistencia = cargar_datos_sheet()
@@ -53,14 +53,14 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
 
     if "mensajes" not in st.session_state:
         st.session_state.mensajes = [
-            {"rol": "assistant", "contenido": "👋 ¡Hola, Norelly! La Base de Datos Maestra de Huaral está sincronizada y lista. ¿Qué deseas consultar hoy?"}
+            {"rol": "assistant", "contenido": f"👋 ¡Hola, Norelly! Base de datos conectada correctamente ({len(df_asistencia)} registros cargados). ¿Qué deseas consultar hoy?"}
         ]
 
     for mensaje in st.session_state.mensajes:
         with st.chat_message(mensaje["rol"]):
             st.markdown(mensaje["contenido"])
 
-    pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 17 de agosto? o ¿Cuál es el récord de asistencia?")
+    pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 18 de agosto?")
 
     if pregunta:
         with st.chat_message("user"):
@@ -68,20 +68,20 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
 
         with st.chat_message("assistant"):
-            with st.spinner("Analizando datos..."):
+            with st.spinner("Analizando registros de asistencia..."):
                 datos_resumen = df_asistencia.to_csv(index=False)
                 
                 prompt_sistema = f"""
-                Actúas como el asistente de recursos humanos de la empresa Norkiam SAC.
-                Tienes acceso a la siguiente base de datos de asistencia en formato CSV:
+                Actúas como el asistente experto de recursos humanos de la empresa Norkiam SAC.
+                Tienes acceso a los datos oficiales de asistencia en el siguiente formato CSV:
                 {datos_resumen}
 
                 Pregunta del usuario: "{pregunta}"
 
-                Instrucciones:
-                1. Analiza los datos proporcionados para responder con precisión exacta.
-                2. Si el usuario pide faltas, lista los nombres y fechas correspondientes.
-                3. Responde de manera profesional, clara y ordenada, utilizando tablas en Markdown cuando sea útil.
+                Instrucciones estrictas:
+                1. Revisa detenidamente los datos para dar una respuesta exacta basada en la fecha y nombres solicitados.
+                2. Si el usuario pregunta por faltas o asistencias de un día específico (ej. 18 de agosto), busca todas las coincidencias en la columna de fechas.
+                3. Responde de manera profesional, clara y ordenada, usando tablas en Markdown si hay varios registros.
                 """
                 
                 respuesta_ia = llamar_gemini(prompt_sistema)
