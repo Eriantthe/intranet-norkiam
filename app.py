@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import re
 from google import genai
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
@@ -14,14 +15,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Solución para el Logo: Buscamos ambos formatos comunes (.png y .jpg)
+# Solución para el Logo
 try:
     st.image("logo.png", width=300)
 except:
     try:
         st.image("logo.jpg", width=300)
     except:
-        st.warning("⚠️ No se encontró el logo. Revisa si el archivo en tu carpeta se llama exactamente 'logo.png' o 'logo.jpg'.")
+        st.warning("⚠️ No se encontró el logo. Revisa el nombre del archivo.")
 
 st.sidebar.title("⚙ Panel de Control")
 clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type="password")
@@ -31,25 +32,55 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Motor IA blindado: Usa el modelo exigido y maneja la saturación y los límites gratuitos
+    # Motor IA blindado con reintentos
     def llamar_gemini(prompt):
-        for intento in range(4): # 4 intentos para atravesar la alta demanda
+        for intento in range(4): 
             try:
                 response = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
                 return response.text
             except Exception as e:
                 error_msg = str(e)
-                # Si el servidor está saturado (503), descansa 3 segundos y vuelve a intentar
                 if "503" in error_msg or "UNAVAILABLE" in error_msg:
                     time.sleep(3) 
                     continue
-                # Si alcanzaste el límite gratuito de velocidad (429)
                 if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                    return "⏳ ¡Uy! Has hecho muchas consultas seguidas y alcanzamos el límite de velocidad del servidor gratuito. Por favor, espera 1 minuto exacto y vuelve a intentarlo."
-                
+                    return "⏳ ¡Uy! El sistema de RRHH está procesando muchas consultas simultáneas. Por favor, espera 1 minuto y vuelve a intentarlo."
                 return f"Lo siento, ocurrió un error técnico: {error_msg}"
+        return "El servidor de IA está experimentando alta demanda. Intenta de nuevo en 1 minuto."
+
+    # ----- LA MAGIA DE LA OPCIÓN 1: OPTIMIZADOR DE MEMORIA -----
+    def optimizar_datos_para_ia(df, pregunta):
+        pregunta_lower = pregunta.lower().replace('?', '').replace('¿', '').replace(',', '')
+        df_filtrado = df.copy()
         
-        return "El servidor de IA está experimentando un pico de alta demanda inusual. Por favor, intenta de nuevo en 1 minuto."
+        # 1. Filtro inteligente por Fecha (Días)
+        numeros = re.findall(r'\b\d{1,2}\b', pregunta_lower)
+        if numeros:
+            mask_fecha = pd.Series(False, index=df_filtrado.index)
+            for num in numeros:
+                dia = num.zfill(2) # Convierte "19" a "19", o "5" a "05"
+                mask_fecha = mask_fecha | df_filtrado['fecha'].astype(str).str.contains(f"-{dia}")
+            if mask_fecha.any():
+                df_filtrado = df_filtrado[mask_fecha]
+
+        # 2. Filtro inteligente por Nombres 
+        palabras_comunes = ['quien', 'quienes', 'falto', 'faltaron', 'asistio', 'asistieron', 
+                            'dime', 'cuales', 'cual', 'agosto', 'mes', 'dia', 'todas', 'todos', 'del', 'los', 'las']
+        palabras_clave = [p for p in pregunta_lower.split() if len(p) > 3 and p not in palabras_comunes]
+        
+        if palabras_clave:
+            mask_nombre = pd.Series(False, index=df_filtrado.index)
+            for palabra in palabras_clave:
+                mask_nombre = mask_nombre | df_filtrado['nombre_completo'].str.lower().str.contains(palabra, na=False)
+            if mask_nombre.any():
+                df_filtrado = df_filtrado[mask_nombre]
+
+        # 3. Seguro Anti-Colapso: Si la pregunta es muy abierta y no filtró nada, envía máximo 1500 filas
+        if len(df_filtrado) > 1500:
+            df_filtrado = df_filtrado.tail(1500)
+            
+        return df_filtrado
+    # -----------------------------------------------------------
 
     @st.cache_data(ttl=10)
     def cargar_datos_sheet():
@@ -84,25 +115,31 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
 
         with st.chat_message("assistant"):
-            # Si se demora, mostrará este mensaje mientras la IA hace los reintentos
-            with st.spinner("Analizando registros (esto puede tomar unos segundos extra si el servidor está lleno)..."):
-                datos_resumen = df_asistencia.to_csv(index=False)
+            with st.spinner("Filtrando datos en milisegundos..."):
+                
+                # ¡Aplicamos el filtro ANTES de llamar a la IA!
+                df_optimizado = optimizar_datos_para_ia(df_asistencia, pregunta)
+                datos_resumen = df_optimizado.to_csv(index=False)
                 
                 prompt_sistema = f"""
                 Actúas como el asistente experto de recursos humanos de la empresa Norkiam SAC.
-                Tienes acceso a los datos oficiales de asistencia en el siguiente formato CSV:
+                Tienes acceso a los datos oficiales pre-filtrados en el siguiente formato CSV:
                 {datos_resumen}
 
                 Pregunta del usuario: "{pregunta}"
 
                 Instrucciones estrictas:
                 1. Revisa detenidamente los datos para dar una respuesta exacta.
-                2. Si el usuario pregunta por faltas, busca a los que tienen "FALTA" o "F" en estado_asistencia en esa fecha.
-                3. Responde de manera clara usando listas o tablas.
+                2. Responde de manera directa, clara y ordenada, usando listas o tablas en Markdown.
+                3. Si el usuario pregunta por faltas, busca los estados "FALTA" o "F".
                 """
                 
                 respuesta_ia = llamar_gemini(prompt_sistema)
                 st.markdown(respuesta_ia)
+                
+                # Esto es un detalle visual genial para que tú y tu papá vean cuánto ahorró el filtro:
+                st.caption(f"⚡ Optimizador de memoria: La IA analizó solo {len(df_optimizado)} registros relevantes en lugar de los {len(df_asistencia)} totales.")
+                
                 st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_ia})
 
 elif clave_ingresada:
