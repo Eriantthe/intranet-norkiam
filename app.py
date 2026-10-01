@@ -76,27 +76,38 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # --- NUEVO SISTEMA DE ESCUDO (MODEL FALLBACK) ---
+    # --- ESCUDO DEFINITIVO: MODELOS MODERNOS + PROTECCIÓN ANTI-CAÍDAS ---
     def llamar_gemini_blindado(prompt_o_lista):
-        # Lista de modelos de élite. Si uno falla o no está autorizado, salta al siguiente silenciosamente.
+        # Usaremos los modelos modernos de la serie 3 (que sí acepta tu cuenta)
         modelos_disponibles = [
-            'gemini-1.5-pro',
-            'gemini-1.5-flash-002',
-            'gemini-1.5-pro-latest',
-            'gemini-2.0-flash-exp',
-            'gemini-pro'
+            'gemini-3.8-flash',
+            'gemini-3.7-flash',
+            'gemini-3.6-flash',
+            'gemini-3.5-flash'
         ]
         ultimo_error = None
         
         for modelo in modelos_disponibles:
-            try:
-                return client.models.generate_content(model=modelo, contents=prompt_o_lista)
-            except Exception as e:
-                ultimo_error = e
-                continue # Falla silenciosamente y prueba el siguiente modelo de la lista
-        
-        # Si todos fallan (muy improbable), mostramos el error
-        raise Exception(f"No se pudo conectar a ningún modelo de Gemini. Detalle: {ultimo_error}")
+            for intento in range(3): # Reintentos pacientes (3 veces)
+                try:
+                    return client.models.generate_content(model=modelo, contents=prompt_o_lista)
+                except Exception as e:
+                    ultimo_error = e
+                    mensaje_error = str(e)
+                    
+                    # Si el servidor está saturado (503), esperamos 3 segundos y volvemos a golpear la puerta
+                    if "503" in mensaje_error:
+                        time.sleep(3)
+                        continue
+                        
+                    # Si el modelo no existe (404), saltamos inmediatamente al siguiente modelo de la lista
+                    elif "404" in mensaje_error:
+                        break
+                        
+                    else:
+                        break # Si es otro error raro, saltamos al siguiente modelo
+                        
+        raise Exception(f"Último error registrado: {ultimo_error}")
     
     # 3. SINCRONIZACIÓN AUTÓNOMA SILENCIOSA
     if "drive_sincronizado" not in st.session_state:
