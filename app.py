@@ -26,20 +26,21 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Usamos gemini-2.5-flash para garantizar velocidad instantánea y evitar errores 503
+    # Actualizado al modelo gemini-3.8-flash tal como exige el servidor
     def llamar_gemini(prompt):
         try:
-            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            response = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
             return response.text
         except Exception as e:
             return f"Lo siento, ocurrió un error de conexión: {str(e)}"
 
-    @st.cache_data(ttl=30)
+    # Tiempo de caché bajado a 10 segundos para forzar que lea los datos nuevos
+    @st.cache_data(ttl=10)
     def cargar_datos_sheet():
         try:
             sheet_id = st.secrets["ID_GOOGLE_SHEET"]
-            # Usamos el formato de exportación CSV directo de la pestaña principal
-            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
+            # Usamos el formato de exportación CSV directo
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
             df = pd.read_csv(url)
             return df
         except Exception as e:
@@ -80,7 +81,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
 
                 Instrucciones estrictas:
                 1. Revisa detenidamente los datos para dar una respuesta exacta basada en la fecha y nombres solicitados.
-                2. Si el usuario pregunta por faltas o asistencias de un día específico (ej. 18 de agosto), busca todas las coincidencias en la columna de fechas.
+                2. Si el usuario pregunta por faltas o asistencias de un día específico, busca todas las coincidencias en la columna de fechas.
                 3. Responde de manera profesional, clara y ordenada, usando tablas en Markdown si hay varios registros.
                 """
                 
