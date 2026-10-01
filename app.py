@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import time
 from google import genai
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
@@ -27,19 +26,27 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Motor IA blindado: usa el modelo exigido (3.8-flash) y reintenta si hay saturación (503)
+    # LA IDEA DE NORELLY: CASCADA DE MODELOS (Model Fallback)
     def llamar_gemini(prompt):
-        for intento in range(3):
+        # Lista de modelos desde los más capaces hasta los clásicos de rescate
+        modelos_rescate = [
+            'gemini-1.5-pro',
+            'gemini-1.5-flash-8b',
+            'gemini-1.0-pro',
+            'gemini-pro'
+        ]
+        
+        for modelo in modelos_rescate:
             try:
-                response = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+                # Intenta con el modelo actual
+                response = client.models.generate_content(model=modelo, contents=prompt)
                 return response.text
-            except Exception as e:
-                error_msg = str(e)
-                if "503" in error_msg or "UNAVAILABLE" in error_msg:
-                    time.sleep(2) # Si está saturado, espera 2 segundos y ataca de nuevo
-                    continue
-                return f"Lo siento, ocurrió un error: {error_msg}"
-        return "El servidor de IA está muy solicitado en este momento. Por favor, vuelve a intentar tu pregunta en unos segundos."
+            except Exception:
+                # Si está lleno (503) o no existe (404), salta al siguiente inmediatamente
+                continue
+                
+        # Solo si absolutamente TODOS los modelos fallan, muestra este mensaje
+        return "Lo siento, todos los servidores de IA están saturados en este momento. Inténtalo de nuevo en unos segundos."
 
     @st.cache_data(ttl=10)
     def cargar_datos_sheet():
@@ -74,7 +81,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
 
         with st.chat_message("assistant"):
-            with st.spinner("Analizando miles de registros..."):
+            with st.spinner("Buscando en los registros con la IA..."):
                 datos_resumen = df_asistencia.to_csv(index=False)
                 
                 prompt_sistema = f"""
