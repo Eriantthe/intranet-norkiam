@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import time
 from google import genai
 
 st.set_page_config(page_title="Intranet Norkiam SAC", page_icon="🏢", layout="wide")
@@ -26,20 +27,23 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
-    # Actualizado al modelo gemini-3.8-flash tal como exige el servidor
+    # Motor IA blindado: usa el modelo más veloz y reintenta si hay error 503
     def llamar_gemini(prompt):
-        try:
-            response = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
-            return response.text
-        except Exception as e:
-            return f"Lo siento, ocurrió un error de conexión: {str(e)}"
+        for intento in range(3):
+            try:
+                response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+                return response.text
+            except Exception as e:
+                if "503" in str(e):
+                    time.sleep(2) # Espera 2 segundos y vuelve a intentar
+                    continue
+                return f"Lo siento, ocurrió un error de conexión: {str(e)}"
+        return "El servidor de IA está muy solicitado en este momento. Por favor, vuelve a intentar tu pregunta en unos segundos."
 
-    # Tiempo de caché bajado a 10 segundos para forzar que lea los datos nuevos
     @st.cache_data(ttl=10)
     def cargar_datos_sheet():
         try:
             sheet_id = st.secrets["ID_GOOGLE_SHEET"]
-            # Usamos el formato de exportación CSV directo
             url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
             df = pd.read_csv(url)
             return df
@@ -69,7 +73,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
 
         with st.chat_message("assistant"):
-            with st.spinner("Analizando registros de asistencia..."):
+            with st.spinner("Analizando miles de registros..."):
                 datos_resumen = df_asistencia.to_csv(index=False)
                 
                 prompt_sistema = f"""
