@@ -34,7 +34,7 @@ def inicializar_base_datos():
         )
     ''')
     
-    # Datos de prueba para que puedas usar el chat inmediatamente
+    # Datos de prueba iniciales
     c.execute("SELECT COUNT(*) FROM registro_asistencia")
     if c.fetchone()[0] == 0:
         datos_prueba = [
@@ -76,6 +76,17 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
+    # Función auxiliar para llamar a Gemini con reintentos (Antichoque para el 503)
+    def llamar_gemini_con_reintento(prompt_o_lista, max_intentos=3):
+        for intento in range(max_intentos):
+            try:
+                # Volvemos al modelo oficial seguro
+                return client.models.generate_content(model='gemini-1.5-flash', contents=prompt_o_lista)
+            except Exception as e:
+                if intento == max_intentos - 1:
+                    raise e
+                time.sleep(3) # Espera 3 segundos antes de volver a intentar
+    
     # 3. SINCRONIZACIÓN AUTÓNOMA SILENCIOSA
     if "drive_sincronizado" not in st.session_state:
         with st.spinner("Sincronizando archivos corporativos..."):
@@ -113,8 +124,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         """
                         
                         try:
-                            # CORRECCIÓN DE MODELO AQUÍ
-                            respuesta = client.models.generate_content(model='gemini-1.5-flash-latest', contents=[documento, instruccion])
+                            respuesta = llamar_gemini_con_reintento([documento, instruccion])
                             texto_limpio = re.sub(r'```json|```', '', respuesta.text).strip()
                             datos_extraidos = json.loads(texto_limpio)
                             
@@ -134,7 +144,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 st.session_state.drive_sincronizado = True
             except Exception as e:
                 st.session_state.drive_sincronizado = True
-                st.sidebar.warning("Aviso: No se pudo conectar con Drive en este momento.")
+                st.sidebar.warning("Aviso: No se pudo conectar con Drive.")
 
     # 4. CHATBOT CORPORATIVO
     st.title("💬 Asistente de Datos Norkiam")
@@ -170,8 +180,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     4. NUNCA uses funciones como MONTH(), YEAR(), o DAY(). Usa LIKE '%-07-%' para meses o igualdades simples.
                     """
                     
-                    # CORRECCIÓN DE MODELO AQUÍ
-                    respuesta_sql = client.models.generate_content(model='gemini-1.5-flash-latest', contents=prompt_sql)
+                    respuesta_sql = llamar_gemini_con_reintento(prompt_sql)
                     
                     texto_ia = respuesta_sql.text.replace('```sql', '').replace('```', '').strip()
                     inicio_select = texto_ia.upper().find('SELECT')
@@ -188,7 +197,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     conn.close()
                     
                     if df.empty:
-                        respuesta_final = "No encontré registros exactos en la base de datos para esa consulta. Intenta buscar solo por el apellido."
+                        respuesta_final = "No encontré registros en la base de datos para esa consulta. Intenta buscar por el apellido principal."
                     else:
                         datos_texto = df.to_csv(index=False)
                         prompt_resumen = f"""
@@ -202,15 +211,14 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                         3. Haz el cálculo si piden sumatorias.
                         """
                         
-                        # CORRECCIÓN DE MODELO AQUÍ
-                        respuesta_ia = client.models.generate_content(model='gemini-1.5-flash-latest', contents=prompt_resumen)
+                        respuesta_ia = llamar_gemini_con_reintento(prompt_resumen)
                         respuesta_final = respuesta_ia.text
                         
                     st.markdown(respuesta_final)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_final})
                     
                 except Exception as e:
-                    error_msg = f"**Error técnico detectado:** {e} \n\n **Consulta SQL generada:** `{query_limpia}`"
+                    error_msg = f"**Error técnico detectado:** {e}"
                     st.error(error_msg)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": error_msg})
 
