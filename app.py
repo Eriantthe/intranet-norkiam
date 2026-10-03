@@ -53,7 +53,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         pregunta_lower = pregunta.lower().replace('?', '').replace('¿', '').replace(',', '')
         
         fila_base = 0
-        for idx in range(min(10, len(df))):
+        for idx in range(min(15, len(df))):
             fila_texto = ' '.join(df.iloc[idx].fillna('').astype(str)).upper()
             if 'DNI' in fila_texto and 'NOMBRES' in fila_texto:
                 fila_base = idx
@@ -195,7 +195,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         dcto_falta = col2.number_input("Descuento por Falta (S/.)", min_value=0.0, value=37.67, step=0.01)
         porcentaje_onp = col3.number_input("Descuento ONP/AFP (%)", min_value=0.0, value=13.0, step=0.5)
         
-        # 3. Nombres dinámicos extraídos de tu Excel real
+        # 3. Nombres dinámicos extraídos del Excel
         default_horas = "1ERA QUINCENA" if quincena_sel == "1ra Quincena" else "2DA QUINCENA"
         
         st.markdown("---")
@@ -205,89 +205,100 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         col_faltas_input = c2.text_input("Columna de Faltas:", value="FAL")
 
         if not df_asistencia.empty:
+            # Buscar la fila base de manera segura
             fila_base_p = 0
-            for idx in range(min(10, len(df_asistencia))):
-                if 'DNI' in ' '.join(df_asistencia.iloc[idx].fillna('').astype(str)).upper():
+            for idx in range(min(15, len(df_asistencia))):
+                fila_texto = ' '.join(df_asistencia.iloc[idx].fillna('').astype(str)).upper()
+                if 'DNI' in fila_texto and 'NOMBRE' in fila_texto:
                     fila_base_p = idx
                     break
             
             df_temp = df_asistencia.iloc[fila_base_p + 1:].copy()
-            df_temp.columns = df_asistencia.iloc[fila_base_p].astype(str).str.strip().str.upper()
+            # Forzamos la cabecera a string de manera robusta
+            df_temp.columns = df_asistencia.iloc[fila_base_p].fillna('').astype(str).str.strip().str.upper()
             
             col_horas_upper = col_horas_input.strip().upper()
             col_faltas_upper = col_faltas_input.strip().upper()
             
             if col_horas_upper in df_temp.columns and col_faltas_upper in df_temp.columns:
-                col_dni_name = [c for c in df_temp.columns if 'DNI' in c][0]
-                col_nom_name = [c for c in df_temp.columns if 'NOMBRE' in c][0]
                 
-                horas = pd.to_numeric(df_temp[col_horas_upper], errors='coerce').fillna(0)
-                faltas = pd.to_numeric(df_temp[col_faltas_upper], errors='coerce').fillna(0)
+                # --- SOLUCIÓN DEL ERROR TIPO: BÚSQUEDA SEGURA DE COLUMNAS ---
+                columnas_dni = [c for c in df_temp.columns if 'DNI' in str(c).upper()]
+                columnas_nom = [c for c in df_temp.columns if 'NOMBRE' in str(c).upper()]
                 
-                # CREAR TABLA BASE PARA EL EDITOR (INTERACTIVO)
-                df_editor = pd.DataFrame({
-                    "DNI": df_temp[col_dni_name],
-                    "NOMBRES": df_temp[col_nom_name],
-                    "HORAS": horas,
-                    "FALTAS": faltas,
-                    "BONO INDIVIDUAL (S/.)": 0.0  # El usuario editará esta columna
-                })
-                
-                # Filtrar filas vacías
-                df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != "nan"]
-                df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != ""]
-                
-                st.subheader("👇 Asigna Bonos Individuales")
-                st.info("Haz doble clic en la columna 'Bono Individual' para darle un extra a trabajadores específicos antes de calcular el pago.")
-                
-                # RENDERIZAR LA TABLA EDITABLE EN PANTALLA
-                df_editado = st.data_editor(
-                    df_editor,
-                    disabled=["DNI", "NOMBRES", "HORAS", "FALTAS"], # Bloquea la identidad para evitar errores
-                    use_container_width=True,
-                    key=f"editor_bonos_{mes_seleccionado}_{quincena_sel}",
-                    column_config={
-                        "BONO INDIVIDUAL (S/.)": st.column_config.NumberColumn(
-                            "Bono Individual (S/.)",
-                            min_value=0.0,
-                            format="S/. %.2f"
-                        )
-                    }
-                )
-                
-                st.markdown("---")
-                if st.button("⚙️ Procesar Planilla y Calcular Neto"):
-                    # Cálculos con los datos del editor
-                    sueldo_bruto = df_editado["HORAS"] * pago_hora_base
-                    dcto_faltas_total = df_editado["FALTAS"] * dcto_falta
-                    monto_onp = sueldo_bruto * (porcentaje_onp / 100)
-                    bonos_personales = df_editado["BONO INDIVIDUAL (S/.)"]
+                if not columnas_dni or not columnas_nom:
+                    st.error("❌ No se detectó la columna 'DNI' o 'NOMBRES' en la matriz. Verifica la estructura del archivo.")
+                else:
+                    col_dni_name = columnas_dni[0]
+                    col_nom_name = columnas_nom[0]
                     
-                    # Ecuación Final
-                    sueldo_neto = sueldo_bruto - dcto_faltas_total - monto_onp + bonos_personales
-                    sueldo_neto = sueldo_neto.clip(lower=0) # Para que nunca salga pago negativo
+                    horas = pd.to_numeric(df_temp[col_horas_upper], errors='coerce').fillna(0)
+                    faltas = pd.to_numeric(df_temp[col_faltas_upper], errors='coerce').fillna(0)
                     
-                    df_final = pd.DataFrame({
-                        "DNI": df_editado["DNI"],
-                        "NOMBRES": df_editado["NOMBRES"],
-                        "HORAS PAGADAS": df_editado["HORAS"],
-                        "SUELDO BRUTO (S/.)": sueldo_bruto.round(2),
-                        f"ONP/AFP {porcentaje_onp}% (S/.)": monto_onp.round(2),
-                        "DCTO FALTAS (S/.)": dcto_faltas_total.round(2),
-                        "BONOS EXTRAS (S/.)": bonos_personales.round(2),
-                        "NETO A PAGAR (S/.)": sueldo_neto.round(2)
+                    # CREAR TABLA BASE PARA EL EDITOR (INTERACTIVO)
+                    df_editor = pd.DataFrame({
+                        "DNI": df_temp[col_dni_name],
+                        "NOMBRES": df_temp[col_nom_name],
+                        "HORAS": horas,
+                        "FALTAS": faltas,
+                        "BONO INDIVIDUAL (S/.)": 0.0  # El usuario editará esta columna
                     })
                     
-                    st.success("✅ ¡Planilla calculada exitosamente!")
-                    st.dataframe(df_final, use_container_width=True)
+                    # Filtrar filas vacías de manera segura
+                    df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != "nan"]
+                    df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != ""]
                     
-                    csv_descarga = df_final.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label=f"📥 Descargar Archivo Excel CSV ({quincena_sel})",
-                        data=csv_descarga,
-                        file_name=f"Planilla_Pagos_{quincena_sel[:3]}_Norkiam_{mes_seleccionado}.csv",
-                        mime="text/csv"
+                    st.subheader("👇 Asigna Bonos Individuales")
+                    st.info("Haz doble clic en la columna 'Bono Individual' para darle un extra a trabajadores específicos antes de calcular el pago.")
+                    
+                    # RENDERIZAR LA TABLA EDITABLE EN PANTALLA
+                    df_editado = st.data_editor(
+                        df_editor,
+                        disabled=["DNI", "NOMBRES", "HORAS", "FALTAS"], # Bloquea la identidad para evitar errores
+                        use_container_width=True,
+                        key=f"editor_bonos_{mes_seleccionado}_{quincena_sel}",
+                        column_config={
+                            "BONO INDIVIDUAL (S/.)": st.column_config.NumberColumn(
+                                "Bono Individual (S/.)",
+                                min_value=0.0,
+                                format="S/. %.2f"
+                            )
+                        }
                     )
+                    
+                    st.markdown("---")
+                    if st.button("⚙️ Procesar Planilla y Calcular Neto"):
+                        # Cálculos con los datos del editor
+                        sueldo_bruto = df_editado["HORAS"] * pago_hora_base
+                        dcto_faltas_total = df_editado["FALTAS"] * dcto_falta
+                        monto_onp = sueldo_bruto * (porcentaje_onp / 100)
+                        bonos_personales = df_editado["BONO INDIVIDUAL (S/.)"]
+                        
+                        # Ecuación Final
+                        sueldo_neto = sueldo_bruto - dcto_faltas_total - monto_onp + bonos_personales
+                        sueldo_neto = sueldo_neto.clip(lower=0) # Para que nunca salga pago negativo
+                        
+                        df_final = pd.DataFrame({
+                            "DNI": df_editado["DNI"],
+                            "NOMBRES": df_editado["NOMBRES"],
+                            "HORAS PAGADAS": df_editado["HORAS"],
+                            "SUELDO BRUTO (S/.)": sueldo_bruto.round(2),
+                            f"ONP/AFP {porcentaje_onp}% (S/.)": monto_onp.round(2),
+                            "DCTO FALTAS (S/.)": dcto_faltas_total.round(2),
+                            "BONOS EXTRAS (S/.)": bonos_personales.round(2),
+                            "NETO A PAGAR (S/.)": sueldo_neto.round(2)
+                        })
+                        
+                        st.success("✅ ¡Planilla calculada exitosamente!")
+                        st.dataframe(df_final, use_container_width=True)
+                        
+                        csv_descarga = df_final.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label=f"📥 Descargar Archivo Excel CSV ({quincena_sel})",
+                            data=csv_descarga,
+                            file_name=f"Planilla_Pagos_{quincena_sel[:3]}_Norkiam_{mes_seleccionado}.csv",
+                            mime="text/csv"
+                        )
             else:
                 st.error(f"❌ Asegúrate de que las columnas '{col_horas_input}' y '{col_faltas_input}' existan en tu Google Sheets.")
 
