@@ -49,6 +49,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 return f"Lo siento, ocurrió un error técnico: {error_msg}"
         return "El servidor de IA está experimentando alta demanda. Intenta de nuevo en 1 minuto."
 
+    # ----- FILTRO INTELIGENTE PARA LA IA -----
     def optimizar_datos_para_ia(df, pregunta):
         pregunta_lower = pregunta.lower().replace('?', '').replace('¿', '').replace(',', '')
         
@@ -130,91 +131,92 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     df_asistencia = cargar_datos_sheet(mes_seleccionado)
 
     # =========================================================================
-    # MÓDULO AVANZADO DE PLANILLA DE PAGOS CON SOBRETIEMPOS
+    # CALCULADORA AUTOMÁTICA DE PLANILLA
     # =========================================================================
     st.sidebar.markdown("---")
-    st.sidebar.header("💰 Generador de Planilla")
+    st.sidebar.header("💰 Calculadora de Pagos")
+    st.sidebar.caption("Python calculará el detalle a pagar en base a tu matriz.")
     
-    quincena_sel = st.sidebar.radio("Quincena a calcular:", ["1ra Quincena", "2da Quincena"])
-    pago_hora_base = st.sidebar.number_input("Sueldo Base por Hora (S/.)", min_value=0.0, value=4.71, step=0.1)
-    dcto_falta = st.sidebar.number_input("Descuento por Falta (S/.)", min_value=0.0, value=40.0, step=1.0)
-    bono_extra = st.sidebar.number_input("Bono Adicional (S/.)", min_value=0.0, value=0.0, step=10.0)
+    pago_hora_base = st.sidebar.number_input("Sueldo Base por Hora (S/.)", min_value=0.0, value=4.71, step=0.01)
+    dcto_falta = st.sidebar.number_input("Descuento por Falta (S/.)", min_value=0.0, value=37.67, step=0.01)
+    bono_general = st.sidebar.number_input("Bono Adicional (S/.)", min_value=0.0, value=0.0, step=10.0)
     
-    st.sidebar.caption("Nombres de las columnas de TOTALES al final del Excel:")
-    col_horas_normales = st.sidebar.text_input("Total Horas Normales (8H):", value="TOTAL 8H")
-    col_horas_25 = st.sidebar.text_input("Total Horas Extra (25%):", value="TOTAL 25%")
-    col_horas_35 = st.sidebar.text_input("Total Horas Extra (35%):", value="TOTAL 35%")
-    col_faltas = st.sidebar.text_input("Columna Total Faltas (FAL):", value="TOTAL FAL")
+    st.sidebar.markdown("**Columnas de tu Excel a calcular:**")
+    col_horas_input = st.sidebar.text_input("Columna de Total de Horas:", value="TOTAL HORAS")
+    col_faltas_input = st.sidebar.text_input("Columna de Total de Faltas:", value="TOTAL FAL")
     
-    if st.sidebar.button("⚙️ Generar Planilla de Pago"):
+    if st.sidebar.button("⚙️ Generar Tabla Detallada"):
         if not df_asistencia.empty:
+            # 1. Encontrar la fila de encabezados (DNI, NOMBRES)
             fila_base_p = 0
             for idx in range(min(10, len(df_asistencia))):
                 if 'DNI' in ' '.join(df_asistencia.iloc[idx].fillna('').astype(str)).upper():
                     fila_base_p = idx
                     break
             
+            # 2. Configurar la tabla de datos
             df_planilla = df_asistencia.iloc[fila_base_p + 1:].copy()
             df_planilla.columns = df_asistencia.iloc[fila_base_p].astype(str).str.strip().str.upper()
             
-            # Limpiar nombres para coincidencia exacta
-            cols_requeridas = [col_horas_normales.strip().upper(), col_horas_25.strip().upper(), 
-                               col_horas_35.strip().upper(), col_faltas.strip().upper()]
+            col_horas_upper = col_horas_input.strip().upper()
+            col_faltas_upper = col_faltas_input.strip().upper()
             
-            columnas_faltantes = [col for col in cols_requeridas if col not in df_planilla.columns]
-            
-            if not columnas_faltantes:
+            # Validar que las columnas que escribiste existan en el Excel
+            if col_horas_upper in df_planilla.columns and col_faltas_upper in df_planilla.columns:
                 col_dni_name = [c for c in df_planilla.columns if 'DNI' in c][0]
                 col_nom_name = [c for c in df_planilla.columns if 'NOMBRE' in c][0]
                 
-                # Extraer datos numéricos
-                horas_norm = pd.to_numeric(df_planilla[cols_requeridas[0]], errors='coerce').fillna(0)
-                horas_25 = pd.to_numeric(df_planilla[cols_requeridas[1]], errors='coerce').fillna(0)
-                horas_35 = pd.to_numeric(df_planilla[cols_requeridas[2]], errors='coerce').fillna(0)
-                faltas = pd.to_numeric(df_planilla[cols_requeridas[3]], errors='coerce').fillna(0)
+                # Extraer números y limpiar
+                horas = pd.to_numeric(df_planilla[col_horas_upper], errors='coerce').fillna(0)
+                faltas = pd.to_numeric(df_planilla[col_faltas_upper], errors='coerce').fillna(0)
                 
-                # Cálculos de sobretiempo legal
-                pago_25 = pago_hora_base * 1.25
-                pago_35 = pago_hora_base * 1.35
+                # LA MAGIA MATEMÁTICA
+                sueldo_bruto = horas * pago_hora_base
+                total_descuento = faltas * dcto_falta
+                sueldo_neto = sueldo_bruto - total_descuento + bono_general
+                sueldo_neto = sueldo_neto.clip(lower=0) # Para no deber dinero si las faltas superan las horas
                 
-                monto_norm = horas_norm * pago_hora_base
-                monto_25 = horas_25 * pago_25
-                monto_35 = horas_35 * pago_35
-                
-                sueldo_bruto = monto_norm + monto_25 + monto_35
-                total_descuentos = faltas * dcto_falta
-                sueldo_neto = sueldo_bruto - total_descuentos + bono_extra
-                sueldo_neto = sueldo_neto.clip(lower=0) 
-                
-                df_final = pd.DataFrame({
+                # Armar el reporte detallado
+                df_calculado = pd.DataFrame({
                     "DNI": df_planilla[col_dni_name],
-                    "NOMBRES": df_planilla[col_nom_name],
-                    "HORAS NORMALES": horas_norm,
-                    "HORAS 25%": horas_25,
-                    "HORAS 35%": horas_35,
+                    "APELLIDOS Y NOMBRES": df_planilla[col_nom_name],
+                    "HORAS TRABAJADAS": horas,
                     "FALTAS": faltas,
                     "SUELDO BRUTO (S/.)": sueldo_bruto.round(2),
-                    "DESCUENTOS (S/.)": total_descuentos.round(2),
-                    "BONOS (S/.)": bono_extra,
+                    "DESCUENTO FALTAS (S/.)": total_descuento.round(2),
+                    "BONOS (S/.)": bono_general,
                     "TOTAL A PAGAR (S/.)": sueldo_neto.round(2)
                 })
                 
-                df_final = df_final[df_final["DNI"].astype(str).str.strip() != "nan"]
-                df_final = df_final[df_final["DNI"].astype(str).str.strip() != ""]
+                # Filtrar filas vacías
+                df_calculado = df_calculado[df_calculado["DNI"].astype(str).str.strip() != "nan"]
+                df_calculado = df_calculado[df_calculado["DNI"].astype(str).str.strip() != ""]
                 
-                csv_planilla = df_final.to_csv(index=False).encode('utf-8')
-                st.sidebar.success("✅ Planilla generada con éxito.")
+                # Guardar el DataFrame en sesión para mostrarlo en la interfaz principal
+                st.session_state["tabla_calculada"] = df_calculado
+                st.session_state["mes_calculado"] = mes_seleccionado
+                st.sidebar.success("✅ Cálculos realizados con éxito.")
+                
+                # Botón de descarga en el sidebar
+                csv_descarga = df_calculado.to_csv(index=False).encode('utf-8')
                 st.sidebar.download_button(
-                    label=f"📥 Descargar Planilla ({quincena_sel})",
-                    data=csv_planilla,
-                    file_name=f"Planilla_Pago_Norkiam_{mes_seleccionado}_{quincena_sel[:3]}.csv",
+                    label=f"📥 Descargar Tabla ({mes_seleccionado})",
+                    data=csv_descarga,
+                    file_name=f"Detalle_Pagos_Norkiam_{mes_seleccionado}.csv",
                     mime="text/csv"
                 )
             else:
-                st.sidebar.error(f"❌ Faltan estas columnas de totales en tu Excel: {', '.join(columnas_faltantes)}")
+                st.sidebar.error(f"❌ Error: Asegúrate de que las columnas '{col_horas_input}' y '{col_faltas_input}' existan exactamente así en tu Excel.")
     # =========================================================================
 
     st.title("💬 Asistente de Datos Norkiam")
+    
+    # Mostrar la tabla calculada en la pantalla principal si se generó
+    if "tabla_calculada" in st.session_state and st.session_state["mes_calculado"] == mes_seleccionado:
+        st.subheader("📊 Vista Previa de la Planilla Calculada")
+        st.dataframe(st.session_state["tabla_calculada"], use_container_width=True)
+        st.markdown("---")
+
     st.markdown(f"Pregúntame sobre asistencias, faltas o tardanzas del mes de **{mes_seleccionado}**.")
 
     if "mensajes" not in st.session_state:
