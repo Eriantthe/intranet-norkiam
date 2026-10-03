@@ -129,12 +129,14 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
 
     df_asistencia = cargar_datos_sheet(mes_seleccionado)
 
-    # CREACIÓN DE PESTAÑAS PARA ORGANIZAR LA INTRANET
+    # =========================================================================
+    # TABS (PESTAÑAS)
+    # =========================================================================
     tab_chat, tab_planilla = st.tabs(["💬 Chat Asistente", "📝 Planilla Interactiva"])
 
-    # =========================================================================
-    # PESTAÑA 1: CHAT DE INTELIGENCIA ARTIFICIAL
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # PESTAÑA 1: CHAT
+    # -------------------------------------------------------------------------
     with tab_chat:
         st.markdown(f"Pregúntame sobre asistencias, faltas o tardanzas del mes de **{mes_seleccionado}**.")
 
@@ -176,20 +178,31 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     st.markdown(respuesta_ia)
                     st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_ia})
 
-    # =========================================================================
-    # PESTAÑA 2: CALCULADORA WEB CON BONOS INDIVIDUALES EDITABLES
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # PESTAÑA 2: PLANILLA Y BONOS INDIVIDUALES
+    # -------------------------------------------------------------------------
     with tab_planilla:
-        st.header("💰 Generador de Planilla con Asignación Individual")
-        st.markdown("Configura las tarifas globales y asigna bonos específicos a cada trabajador directamente en la tabla.")
+        st.header("💰 Generador de Planillas Quincenales")
+        st.markdown("Calcula los pagos por quincena, aplica descuentos y asigna **bonos individuales** manualmente.")
         
+        # 1. Selector de Quincena
+        quincena_sel = st.radio("📅 Selecciona la Quincena a procesar:", ["1ra Quincena", "2da Quincena"], horizontal=True)
+        
+        # 2. Tarifas Globales
+        st.markdown("---")
         col1, col2, col3 = st.columns(3)
         pago_hora_base = col1.number_input("Sueldo Base por Hora (S/.)", min_value=0.0, value=4.71, step=0.01)
         dcto_falta = col2.number_input("Descuento por Falta (S/.)", min_value=0.0, value=37.67, step=0.01)
         porcentaje_onp = col3.number_input("Descuento ONP/AFP (%)", min_value=0.0, value=13.0, step=0.5)
         
-        col_horas_input = st.text_input("Columna de Horas en Excel:", value="TOTAL HORAS")
-        col_faltas_input = st.text_input("Columna de Faltas en Excel:", value="TOTAL FAL")
+        # 3. Nombres dinámicos extraídos de tu Excel real
+        default_horas = "1ERA QUINCENA" if quincena_sel == "1ra Quincena" else "2DA QUINCENA"
+        
+        st.markdown("---")
+        st.caption("Nombres de columnas exactos detectados en tu Excel:")
+        c1, c2 = st.columns(2)
+        col_horas_input = c1.text_input("Columna de Horas:", value=default_horas)
+        col_faltas_input = c2.text_input("Columna de Faltas:", value="FAL")
 
         if not df_asistencia.empty:
             fila_base_p = 0
@@ -211,26 +224,28 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 horas = pd.to_numeric(df_temp[col_horas_upper], errors='coerce').fillna(0)
                 faltas = pd.to_numeric(df_temp[col_faltas_upper], errors='coerce').fillna(0)
                 
-                # CREAR TABLA BASE PARA EL EDITOR
+                # CREAR TABLA BASE PARA EL EDITOR (INTERACTIVO)
                 df_editor = pd.DataFrame({
                     "DNI": df_temp[col_dni_name],
                     "NOMBRES": df_temp[col_nom_name],
-                    "HORAS TRABAJADAS": horas,
+                    "HORAS": horas,
                     "FALTAS": faltas,
-                    "BONO INDIVIDUAL (S/.)": 0.0  # Columna que el usuario editará
+                    "BONO INDIVIDUAL (S/.)": 0.0  # El usuario editará esta columna
                 })
                 
+                # Filtrar filas vacías
                 df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != "nan"]
                 df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != ""]
                 
-                st.subheader("1. Edita los bonos directamente en esta tabla:")
+                st.subheader("👇 Asigna Bonos Individuales")
+                st.info("Haz doble clic en la columna 'Bono Individual' para darle un extra a trabajadores específicos antes de calcular el pago.")
                 
-                # RENDERIZAR EL "MINI-EXCEL" INTERACTIVO
+                # RENDERIZAR LA TABLA EDITABLE EN PANTALLA
                 df_editado = st.data_editor(
                     df_editor,
-                    disabled=["DNI", "NOMBRES", "HORAS TRABAJADAS", "FALTAS"], # Bloquea la identidad
+                    disabled=["DNI", "NOMBRES", "HORAS", "FALTAS"], # Bloquea la identidad para evitar errores
                     use_container_width=True,
-                    key=f"editor_bonos_{mes_seleccionado}",
+                    key=f"editor_bonos_{mes_seleccionado}_{quincena_sel}",
                     column_config={
                         "BONO INDIVIDUAL (S/.)": st.column_config.NumberColumn(
                             "Bono Individual (S/.)",
@@ -240,39 +255,41 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     }
                 )
                 
-                st.subheader("2. Procesar Planilla")
-                if st.button("⚙️ Calcular Totales y Descargar"):
+                st.markdown("---")
+                if st.button("⚙️ Procesar Planilla y Calcular Neto"):
                     # Cálculos con los datos del editor
-                    sueldo_bruto = df_editado["HORAS TRABAJADAS"] * pago_hora_base
+                    sueldo_bruto = df_editado["HORAS"] * pago_hora_base
                     dcto_faltas_total = df_editado["FALTAS"] * dcto_falta
                     monto_onp = sueldo_bruto * (porcentaje_onp / 100)
                     bonos_personales = df_editado["BONO INDIVIDUAL (S/.)"]
                     
+                    # Ecuación Final
                     sueldo_neto = sueldo_bruto - dcto_faltas_total - monto_onp + bonos_personales
-                    sueldo_neto = sueldo_neto.clip(lower=0)
+                    sueldo_neto = sueldo_neto.clip(lower=0) # Para que nunca salga pago negativo
                     
                     df_final = pd.DataFrame({
                         "DNI": df_editado["DNI"],
                         "NOMBRES": df_editado["NOMBRES"],
+                        "HORAS PAGADAS": df_editado["HORAS"],
                         "SUELDO BRUTO (S/.)": sueldo_bruto.round(2),
                         f"ONP/AFP {porcentaje_onp}% (S/.)": monto_onp.round(2),
                         "DCTO FALTAS (S/.)": dcto_faltas_total.round(2),
-                        "BONO PERSONAL (S/.)": bonos_personales.round(2),
+                        "BONOS EXTRAS (S/.)": bonos_personales.round(2),
                         "NETO A PAGAR (S/.)": sueldo_neto.round(2)
                     })
                     
-                    st.success("✅ Cálculos procesados exitosamente.")
+                    st.success("✅ ¡Planilla calculada exitosamente!")
                     st.dataframe(df_final, use_container_width=True)
                     
                     csv_descarga = df_final.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label=f"📥 Descargar Archivo Excel CSV ({mes_seleccionado})",
+                        label=f"📥 Descargar Archivo Excel CSV ({quincena_sel})",
                         data=csv_descarga,
-                        file_name=f"Pagos_Completos_Norkiam_{mes_seleccionado}.csv",
+                        file_name=f"Planilla_Pagos_{quincena_sel[:3]}_Norkiam_{mes_seleccionado}.csv",
                         mime="text/csv"
                     )
             else:
-                st.error(f"❌ Asegúrate de que las columnas '{col_horas_input}' y '{col_faltas_input}' existan en el Google Sheets.")
+                st.error(f"❌ Asegúrate de que las columnas '{col_horas_input}' y '{col_faltas_input}' existan en tu Google Sheets.")
 
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta.")
