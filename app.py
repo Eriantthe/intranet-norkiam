@@ -129,31 +129,68 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
 
     df_asistencia = cargar_datos_sheet(mes_seleccionado)
 
+    # CREACIÓN DE PESTAÑAS PARA ORGANIZAR LA INTRANET
+    tab_chat, tab_planilla = st.tabs(["💬 Chat Asistente", "📝 Planilla Interactiva"])
+
     # =========================================================================
-    # CALCULADORA WEB AUTOMÁTICA (PORCENTAJES Y FRACCIONES)
+    # PESTAÑA 1: CHAT DE INTELIGENCIA ARTIFICIAL
     # =========================================================================
-    st.sidebar.markdown("---")
-    st.sidebar.header("💰 Calculadora Web (Fracciones)")
-    
-    st.sidebar.markdown("**Tarifas Base:**")
-    pago_hora_base = st.sidebar.number_input("Sueldo Base por Hora (S/.)", min_value=0.0, value=4.71, step=0.01)
-    dcto_falta = st.sidebar.number_input("Descuento por Falta (S/.)", min_value=0.0, value=37.67, step=0.01)
-    
-    st.sidebar.markdown("**Modificadores por Porcentaje (%)**")
-    st.sidebar.caption("Se calculan como fracción del Sueldo Bruto")
-    porcentaje_onp = st.sidebar.number_input("Descuento ONP/AFP (%)", min_value=0.0, value=13.0, step=0.5)
-    porcentaje_bono = st.sidebar.number_input("Bono Porcentual General (%)", min_value=0.0, value=0.0, step=0.5)
-    
-    st.sidebar.markdown("**Modificadores Fijos (S/.)**")
-    st.sidebar.caption("Monto exacto aplicado a todos")
-    bono_fijo = st.sidebar.number_input("Bono Fijo General (S/.)", min_value=0.0, value=0.0, step=10.0)
-    dcto_fijo = st.sidebar.number_input("Descuento Fijo General (S/.)", min_value=0.0, value=0.0, step=10.0)
-    
-    st.sidebar.markdown("**Columnas a leer en tu Excel:**")
-    col_horas_input = st.sidebar.text_input("Col. Horas:", value="TOTAL HORAS")
-    col_faltas_input = st.sidebar.text_input("Col. Faltas:", value="TOTAL FAL")
-    
-    if st.sidebar.button("⚙ Generar Tabla Detallada"):
+    with tab_chat:
+        st.markdown(f"Pregúntame sobre asistencias, faltas o tardanzas del mes de **{mes_seleccionado}**.")
+
+        if "mensajes" not in st.session_state:
+            st.session_state.mensajes = [
+                {"rol": "assistant", "contenido": f"👋 ¡Hola, Norelly! Base de datos conectada. ¿Qué deseas consultar hoy?"}
+            ]
+
+        for mensaje in st.session_state.mensajes:
+            with st.chat_message(mensaje["rol"]):
+                st.markdown(mensaje["contenido"])
+
+        pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 14?")
+
+        if pregunta:
+            with st.chat_message("user"):
+                st.markdown(pregunta)
+            st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
+
+            with st.chat_message("assistant"):
+                with st.spinner(f"Escaneando matriz de {mes_seleccionado}..."):
+                    df_optimizado = optimizar_datos_para_ia(df_asistencia, pregunta)
+                    datos_resumen = df_optimizado.to_csv(index=False)
+                    
+                    prompt_sistema = f"""
+                    Actúas como el asistente experto de recursos humanos de la empresa Norkiam SAC.
+                    Tienes acceso a los datos de la matriz pre-filtrados en el siguiente formato CSV:
+                    {datos_resumen}
+
+                    Pregunta del usuario: "{pregunta}"
+
+                    Instrucciones estrictas:
+                    1. Revisa detenidamente los datos.
+                    2. Responde de manera directa y ordenada, usando listas o tablas.
+                    3. Si el usuario pregunta por faltas, busca "FAL", "F", o "FALTA".
+                    """
+                    
+                    respuesta_ia = llamar_gemini(prompt_sistema)
+                    st.markdown(respuesta_ia)
+                    st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_ia})
+
+    # =========================================================================
+    # PESTAÑA 2: CALCULADORA WEB CON BONOS INDIVIDUALES EDITABLES
+    # =========================================================================
+    with tab_planilla:
+        st.header("💰 Generador de Planilla con Asignación Individual")
+        st.markdown("Configura las tarifas globales y asigna bonos específicos a cada trabajador directamente en la tabla.")
+        
+        col1, col2, col3 = st.columns(3)
+        pago_hora_base = col1.number_input("Sueldo Base por Hora (S/.)", min_value=0.0, value=4.71, step=0.01)
+        dcto_falta = col2.number_input("Descuento por Falta (S/.)", min_value=0.0, value=37.67, step=0.01)
+        porcentaje_onp = col3.number_input("Descuento ONP/AFP (%)", min_value=0.0, value=13.0, step=0.5)
+        
+        col_horas_input = st.text_input("Columna de Horas en Excel:", value="TOTAL HORAS")
+        col_faltas_input = st.text_input("Columna de Faltas en Excel:", value="TOTAL FAL")
+
         if not df_asistencia.empty:
             fila_base_p = 0
             for idx in range(min(10, len(df_asistencia))):
@@ -161,119 +198,81 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                     fila_base_p = idx
                     break
             
-            df_planilla = df_asistencia.iloc[fila_base_p + 1:].copy()
-            df_planilla.columns = df_asistencia.iloc[fila_base_p].astype(str).str.strip().str.upper()
+            df_temp = df_asistencia.iloc[fila_base_p + 1:].copy()
+            df_temp.columns = df_asistencia.iloc[fila_base_p].astype(str).str.strip().str.upper()
             
             col_horas_upper = col_horas_input.strip().upper()
             col_faltas_upper = col_faltas_input.strip().upper()
             
-            if col_horas_upper in df_planilla.columns and col_faltas_upper in df_planilla.columns:
-                col_dni_name = [c for c in df_planilla.columns if 'DNI' in c][0]
-                col_nom_name = [c for c in df_planilla.columns if 'NOMBRE' in c][0]
+            if col_horas_upper in df_temp.columns and col_faltas_upper in df_temp.columns:
+                col_dni_name = [c for c in df_temp.columns if 'DNI' in c][0]
+                col_nom_name = [c for c in df_temp.columns if 'NOMBRE' in c][0]
                 
-                # Extracción de datos básicos del Excel
-                horas = pd.to_numeric(df_planilla[col_horas_upper], errors='coerce').fillna(0)
-                faltas = pd.to_numeric(df_planilla[col_faltas_upper], errors='coerce').fillna(0)
+                horas = pd.to_numeric(df_temp[col_horas_upper], errors='coerce').fillna(0)
+                faltas = pd.to_numeric(df_temp[col_faltas_upper], errors='coerce').fillna(0)
                 
-                # CÁLCULOS MATEMÁTICOS DE LA WEB
-                sueldo_bruto = horas * pago_hora_base
-                total_dcto_faltas = faltas * dcto_falta
-                
-                # Cálculo de fracciones (Porcentajes sobre el Bruto)
-                monto_onp = sueldo_bruto * (porcentaje_onp / 100)
-                monto_bono_pct = sueldo_bruto * (porcentaje_bono / 100)
-                
-                # Ecuación final del Sueldo Neto
-                sueldo_neto = (sueldo_bruto 
-                               - total_dcto_faltas 
-                               - monto_onp 
-                               - dcto_fijo 
-                               + monto_bono_pct 
-                               + bono_fijo)
-                
-                sueldo_neto = sueldo_neto.clip(lower=0) 
-                
-                # Armado del reporte final
-                df_calculado = pd.DataFrame({
-                    "DNI": df_planilla[col_dni_name],
-                    "NOMBRES": df_planilla[col_nom_name],
-                    "HORAS": horas,
+                # CREAR TABLA BASE PARA EL EDITOR
+                df_editor = pd.DataFrame({
+                    "DNI": df_temp[col_dni_name],
+                    "NOMBRES": df_temp[col_nom_name],
+                    "HORAS TRABAJADAS": horas,
                     "FALTAS": faltas,
-                    "SUELDO BRUTO (S/.)": sueldo_bruto.round(2),
-                    f"ONP/AFP {porcentaje_onp}% (S/.)": monto_onp.round(2),
-                    "DCTO FALTAS (S/.)": total_dcto_faltas.round(2),
-                    "OTROS DCTOS FIJOS (S/.)": dcto_fijo,
-                    "BONOS TOTALES (S/.)": (monto_bono_pct + bono_fijo).round(2),
-                    "NETO A PAGAR (S/.)": sueldo_neto.round(2)
+                    "BONO INDIVIDUAL (S/.)": 0.0  # Columna que el usuario editará
                 })
                 
-                df_calculado = df_calculado[df_calculado["DNI"].astype(str).str.strip() != "nan"]
-                df_calculado = df_calculado[df_calculado["DNI"].astype(str).str.strip() != ""]
+                df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != "nan"]
+                df_editor = df_editor[df_editor["DNI"].astype(str).str.strip() != ""]
                 
-                st.session_state["tabla_calculada"] = df_calculado
-                st.session_state["mes_calculado"] = mes_seleccionado
-                st.sidebar.success("✅ Cálculos realizados por la plataforma con éxito.")
+                st.subheader("1. Edita los bonos directamente en esta tabla:")
                 
-                csv_descarga = df_calculado.to_csv(index=False).encode('utf-8')
-                st.sidebar.download_button(
-                    label=f"📥 Descargar Tabla ({mes_seleccionado})",
-                    data=csv_descarga,
-                    file_name=f"Pagos_Automatizados_Norkiam_{mes_seleccionado}.csv",
-                    mime="text/csv"
+                # RENDERIZAR EL "MINI-EXCEL" INTERACTIVO
+                df_editado = st.data_editor(
+                    df_editor,
+                    disabled=["DNI", "NOMBRES", "HORAS TRABAJADAS", "FALTAS"], # Bloquea la identidad
+                    use_container_width=True,
+                    key=f"editor_bonos_{mes_seleccionado}",
+                    column_config={
+                        "BONO INDIVIDUAL (S/.)": st.column_config.NumberColumn(
+                            "Bono Individual (S/.)",
+                            min_value=0.0,
+                            format="S/. %.2f"
+                        )
+                    }
                 )
+                
+                st.subheader("2. Procesar Planilla")
+                if st.button("⚙️ Calcular Totales y Descargar"):
+                    # Cálculos con los datos del editor
+                    sueldo_bruto = df_editado["HORAS TRABAJADAS"] * pago_hora_base
+                    dcto_faltas_total = df_editado["FALTAS"] * dcto_falta
+                    monto_onp = sueldo_bruto * (porcentaje_onp / 100)
+                    bonos_personales = df_editado["BONO INDIVIDUAL (S/.)"]
+                    
+                    sueldo_neto = sueldo_bruto - dcto_faltas_total - monto_onp + bonos_personales
+                    sueldo_neto = sueldo_neto.clip(lower=0)
+                    
+                    df_final = pd.DataFrame({
+                        "DNI": df_editado["DNI"],
+                        "NOMBRES": df_editado["NOMBRES"],
+                        "SUELDO BRUTO (S/.)": sueldo_bruto.round(2),
+                        f"ONP/AFP {porcentaje_onp}% (S/.)": monto_onp.round(2),
+                        "DCTO FALTAS (S/.)": dcto_faltas_total.round(2),
+                        "BONO PERSONAL (S/.)": bonos_personales.round(2),
+                        "NETO A PAGAR (S/.)": sueldo_neto.round(2)
+                    })
+                    
+                    st.success("✅ Cálculos procesados exitosamente.")
+                    st.dataframe(df_final, use_container_width=True)
+                    
+                    csv_descarga = df_final.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label=f"📥 Descargar Archivo Excel CSV ({mes_seleccionado})",
+                        data=csv_descarga,
+                        file_name=f"Pagos_Completos_Norkiam_{mes_seleccionado}.csv",
+                        mime="text/csv"
+                    )
             else:
-                st.sidebar.error(f"❌ Error: Las columnas '{col_horas_input}' o '{col_faltas_input}' no existen en el Excel. Verifica los nombres exactos.")
-    # =========================================================================
-
-    st.title("💬 Asistente de Datos Norkiam")
-    
-    if "tabla_calculada" in st.session_state and st.session_state["mes_calculado"] == mes_seleccionado:
-        st.subheader("📊 Vista Previa de la Planilla Calculada")
-        st.dataframe(st.session_state["tabla_calculada"], use_container_width=True)
-        st.markdown("---")
-
-    st.markdown(f"Pregúntame sobre asistencias, faltas o tardanzas del mes de **{mes_seleccionado}**.")
-
-    if "mensajes" not in st.session_state:
-        st.session_state.mensajes = [
-            {"rol": "assistant", "contenido": f"👋 ¡Hola, Norelly! Base de datos de {mes_seleccionado} conectada correctamente. ¿Qué deseas consultar hoy?"}
-        ]
-
-    for mensaje in st.session_state.mensajes:
-        with st.chat_message(mensaje["rol"]):
-            st.markdown(mensaje["contenido"])
-
-    pregunta = st.chat_input("Ejemplo: ¿Quiénes faltaron el 14?")
-
-    if pregunta:
-        with st.chat_message("user"):
-            st.markdown(pregunta)
-        st.session_state.mensajes.append({"rol": "user", "contenido": pregunta})
-
-        with st.chat_message("assistant"):
-            with st.spinner(f"Escaneando matriz de {mes_seleccionado}..."):
-                
-                df_optimizado = optimizar_datos_para_ia(df_asistencia, pregunta)
-                datos_resumen = df_optimizado.to_csv(index=False)
-                
-                prompt_sistema = f"""
-                Actúas como el asistente experto de recursos humanos de la empresa Norkiam SAC.
-                Tienes acceso a los datos de la matriz de asistencia oficial pre-filtrados en el siguiente formato CSV:
-                {datos_resumen}
-
-                Pregunta del usuario: "{pregunta}"
-
-                Instrucciones estrictas:
-                1. Revisa detenidamente los datos. La tabla que recibes YA ha aislado exactamente la fecha que el usuario pidió.
-                2. Responde de manera directa y ordenada, usando listas o tablas.
-                3. Si el usuario pregunta por faltas, busca las palabras "FAL", "F", o "FALTA" en las columnas de Ingreso/Salida.
-                4. Si el usuario pregunta por descansos médicos, busca "DM".
-                """
-                
-                respuesta_ia = llamar_gemini(prompt_sistema)
-                st.markdown(respuesta_ia)
-                
-                st.session_state.mensajes.append({"rol": "assistant", "contenido": respuesta_ia})
+                st.error(f"❌ Asegúrate de que las columnas '{col_horas_input}' y '{col_faltas_input}' existan en el Google Sheets.")
 
 elif clave_ingresada:
     st.sidebar.error("❌ Clave incorrecta.")
