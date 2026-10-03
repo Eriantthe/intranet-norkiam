@@ -49,11 +49,10 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 return f"Lo siento, ocurrió un error técnico: {error_msg}"
         return "El servidor de IA está experimentando alta demanda. Intenta de nuevo en 1 minuto."
 
-    # ----- NUEVO FILTRO INTELIGENTE: LECTURA DINÁMICA A PRUEBA DE ERRORES -----
+    # ----- FILTRO INTELIGENTE PARA LA IA -----
     def optimizar_datos_para_ia(df, pregunta):
         pregunta_lower = pregunta.lower().replace('?', '').replace('¿', '').replace(',', '')
         
-        # 1. Encontrar la fila base que tiene "DNI" y "NOMBRES" (El ancla)
         fila_base = 0
         for idx in range(min(10, len(df))):
             fila_texto = ' '.join(df.iloc[idx].fillna('').astype(str)).upper()
@@ -61,7 +60,6 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 fila_base = idx
                 break
                 
-        # 2. Identificar en qué número de columna está cada dato personal
         col_area = 1; col_dni = 2; col_nombres = 3
         for c_idx, val in enumerate(df.iloc[fila_base]):
             val_str = str(val).upper()
@@ -72,12 +70,10 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         columnas_base_indices = [col_area, col_dni, col_nombres]
         columnas_fecha_indices = []
         
-        # 3. Buscar el día exacto en las filas superiores (donde están las fechas como "lun-14")
         numeros = re.findall(r'\b\d{1,2}\b', pregunta_lower)
         dia_str = ""
         if numeros:
             dia_str = numeros[0].zfill(2)
-            # Revisamos las dos filas encima de la cabecera del DNI
             filas_a_revisar = [max(0, fila_base - 1), max(0, fila_base - 2)]
             
             for fila_idx in filas_a_revisar:
@@ -90,13 +86,11 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 if columnas_fecha_indices:
                     break 
                     
-        # 4. Construir la tabla limpia aislando SOLO las columnas de esa fecha
         fila_datos_inicio = fila_base + 1
         
         if columnas_fecha_indices:
             indices_extraer = columnas_base_indices + columnas_fecha_indices
             df_filtrado = df.iloc[fila_datos_inicio:, indices_extraer].copy()
-            # Le damos nombres ultra claros a la IA para que no adivine
             df_filtrado.columns = ["Area", "DNI", "Apellidos_y_Nombres", f"Ingreso_dia_{dia_str}", f"Salida_dia_{dia_str}"]
         else:
             df_filtrado = df.iloc[fila_datos_inicio:].copy()
@@ -106,7 +100,6 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             nombres_cols[col_nombres] = "Apellidos_y_Nombres"
             df_filtrado.columns = nombres_cols
 
-        # 5. Búsqueda cruzada por nombres
         texto_filas = df_filtrado.fillna('').astype(str).agg(' '.join, axis=1).str.lower()
         palabras_comunes = ['quien', 'quienes', 'falto', 'faltaron', 'asistio', 'asistieron', 
                             'dime', 'cuales', 'cual', 'agosto', 'mes', 'dia', 'todas', 'todos', 'del', 'los', 'las', 'septiembre', 'setiembre']
@@ -124,13 +117,11 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             
         return df_filtrado
 
-    # LEER SIN CABECERAS PARA NO PERDER LAS FECHAS
     @st.cache_data(ttl=10)
     def cargar_datos_sheet(mes):
         try:
             sheet_id = st.secrets["ID_GOOGLE_SHEET"]
             url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-            # CLAVE: header=None lee todo crudo, evitando que pandas borre las fechas
             df = pd.read_excel(url, sheet_name=mes, engine='openpyxl', header=None)
             return df
         except Exception as e:
@@ -138,6 +129,82 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             return pd.DataFrame()
 
     df_asistencia = cargar_datos_sheet(mes_seleccionado)
+
+    # =========================================================================
+    # NUEVO MÓDULO DE PLANILLA DE PAGOS (BARRA LATERAL)
+    # =========================================================================
+    st.sidebar.markdown("---")
+    st.sidebar.header("💰 Generador de Planilla")
+    
+    quincena_sel = st.sidebar.radio("Quincena a calcular:", ["1ra Quincena", "2da Quincena"])
+    pago_hora = st.sidebar.number_input("Pago por Hora (S/.)", min_value=0.0, value=6.0, step=0.5)
+    dcto_falta = st.sidebar.number_input("Descuento por Falta (S/.)", min_value=0.0, value=40.0, step=1.0)
+    bono_extra = st.sidebar.number_input("Bono Adicional general (S/.)", min_value=0.0, value=0.0, step=10.0)
+    
+    st.sidebar.caption("Nombres exactos de las columnas en tu Excel:")
+    # Valores por defecto. Puedes cambiarlos en la app si en tu Excel se llaman diferente.
+    col_horas_nombre = st.sidebar.text_input("Columna de Horas Totales:", value="1° QUIN" if quincena_sel == "1ra Quincena" else "2° QUIN")
+    col_faltas_nombre = st.sidebar.text_input("Columna de Faltas (FAL):", value="FAL")
+    
+    if st.sidebar.button("⚙️ Generar Planilla de Pago"):
+        if not df_asistencia.empty:
+            # 1. Buscar la fila donde están los encabezados reales (DNI, NOMBRES)
+            fila_base_p = 0
+            for idx in range(min(10, len(df_asistencia))):
+                if 'DNI' in ' '.join(df_asistencia.iloc[idx].fillna('').astype(str)).upper():
+                    fila_base_p = idx
+                    break
+            
+            # 2. Crear un DataFrame limpio con los nombres de las columnas correctos
+            df_planilla = df_asistencia.iloc[fila_base_p + 1:].copy()
+            df_planilla.columns = df_asistencia.iloc[fila_base_p].astype(str).str.strip().str.upper()
+            
+            col_horas_upper = col_horas_nombre.strip().upper()
+            col_faltas_upper = col_faltas_nombre.strip().upper()
+            
+            if col_horas_upper in df_planilla.columns and col_faltas_upper in df_planilla.columns:
+                # Extraer DNI y Nombres
+                col_dni_name = [c for c in df_planilla.columns if 'DNI' in c][0]
+                col_nom_name = [c for c in df_planilla.columns if 'NOMBRE' in c][0]
+                
+                # Convertir a números
+                horas = pd.to_numeric(df_planilla[col_horas_upper], errors='coerce').fillna(0)
+                faltas = pd.to_numeric(df_planilla[col_faltas_upper], errors='coerce').fillna(0)
+                
+                # Cálculos matemáticos
+                sueldo_bruto = horas * pago_hora
+                total_descuentos = faltas * dcto_falta
+                sueldo_neto = sueldo_bruto - total_descuentos + bono_extra
+                sueldo_neto = sueldo_neto.clip(lower=0) # Evita pagos negativos
+                
+                # Crear reporte final
+                df_final = pd.DataFrame({
+                    "DNI": df_planilla[col_dni_name],
+                    "NOMBRES": df_planilla[col_nom_name],
+                    f"HORAS {quincena_sel[:3].upper()}": horas,
+                    "FALTAS": faltas,
+                    "SUELDO BRUTO (S/.)": sueldo_bruto,
+                    "DESCUENTOS (S/.)": total_descuentos,
+                    "BONOS (S/.)": bono_extra,
+                    "TOTAL A PAGAR (S/.)": sueldo_neto
+                })
+                
+                # Limpiar filas vacías
+                df_final = df_final[df_final["DNI"].astype(str).str.strip() != "nan"]
+                df_final = df_final[df_final["DNI"].astype(str).str.strip() != ""]
+                
+                # Habilitar descarga
+                csv_planilla = df_final.to_csv(index=False).encode('utf-8')
+                st.sidebar.success("✅ Planilla generada con éxito.")
+                st.sidebar.download_button(
+                    label=f"📥 Descargar Planilla ({quincena_sel})",
+                    data=csv_planilla,
+                    file_name=f"Planilla_Pago_Norkiam_{mes_seleccionado}_{quincena_sel[:3]}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.sidebar.error(f"❌ No se encontró la columna '{col_horas_upper}' o '{col_faltas_upper}' en el mes de {mes_seleccionado}. Revisa los nombres en el Excel.")
+    # =========================================================================
 
     st.title("💬 Asistente de Datos Norkiam")
     st.markdown(f"Pregúntame sobre asistencias, faltas o tardanzas del mes de **{mes_seleccionado}**.")
