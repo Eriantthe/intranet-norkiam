@@ -29,9 +29,8 @@ clave_ingresada = st.sidebar.text_input("1. Clave de Acceso Corporativo:", type=
 if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     st.sidebar.success("✅ Acceso autorizado")
     
-    # NUEVO: Selector de Meses en la barra lateral
     meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SETIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"]
-    mes_seleccionado = st.sidebar.selectbox("2. Mes a consultar:", meses, index=8) # Inicia en SETIEMBRE por defecto
+    mes_seleccionado = st.sidebar.selectbox("2. Mes a consultar:", meses, index=8)
     
     client = genai.Client(api_key=st.secrets["API_KEY_GOOGLE"])
     
@@ -50,6 +49,7 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 return f"Lo siento, ocurrió un error técnico: {error_msg}"
         return "El servidor de IA está experimentando alta demanda. Intenta de nuevo en 1 minuto."
 
+    # ----- NUEVO FILTRO: PREPARADO PARA CABECERAS DOBLES -----
     def optimizar_datos_para_ia(df, pregunta):
         pregunta_lower = pregunta.lower().replace('?', '').replace('¿', '').replace(',', '')
         
@@ -59,12 +59,32 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
         numeros = re.findall(r'\b\d{1,2}\b', pregunta_lower)
         if numeros:
             dia = numeros[0].zfill(2)
-            for col in df.columns[5:]: 
+            # Buscamos en todas las columnas si contienen el día
+            # Pandas nombra las columnas descombinadas como "sáb-12", "Unnamed: 31", etc.
+            # Por seguridad, si encuentra "sáb-12", tomaremos esa columna y la siguiente.
+            for i, col in enumerate(df.columns[5:]): 
                 if str(dia) in str(col): 
-                    columnas_fecha.append(col)
+                    # Agregamos la columna de Ingreso
+                    columnas_fecha.append(df.columns[5 + i])
+                    # Verificamos que exista una columna siguiente para la Salida
+                    if (5 + i + 1) < len(df.columns):
+                        columnas_fecha.append(df.columns[5 + i + 1])
+                    break # Encontramos el día, no necesitamos buscar más
                     
         if columnas_fecha:
             df_filtrado = df[columnas_base + columnas_fecha]
+            
+            # Renombramos las columnas para que la IA no se confunda
+            nuevos_nombres = columnas_base.copy()
+            if len(columnas_fecha) >= 1:
+                nuevos_nombres.append(f"Ingreso_dia_{dia}")
+            if len(columnas_fecha) >= 2:
+                nuevos_nombres.append(f"Salida_dia_{dia}")
+            
+            # Aseguramos que la longitud de nuevos_nombres coincida con las columnas
+            if len(nuevos_nombres) == len(df_filtrado.columns):
+                 df_filtrado.columns = nuevos_nombres
+
         else:
             df_filtrado = df.copy()
 
@@ -90,9 +110,10 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
     def cargar_datos_sheet(mes):
         try:
             sheet_id = st.secrets["ID_GOOGLE_SHEET"]
-            # Exportamos directamente como XLSX y leemos la pestaña seleccionada
             url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-            df = pd.read_excel(url, sheet_name=mes, engine='openpyxl')
+            # header=[2,3] no siempre funciona bien, así que leemos saltando las primeras filas basura
+            # Saltamos las primeras 3 filas (0, 1, 2) y usamos la fila 3 (índice 3, que es la cabecera real con los días)
+            df = pd.read_excel(url, sheet_name=mes, engine='openpyxl', header=3)
             return df
         except Exception as e:
             st.error(f"Error al leer la hoja '{mes}': {e}")
@@ -108,7 +129,6 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
             {"rol": "assistant", "contenido": f"👋 ¡Hola, Norelly! Base de datos de {mes_seleccionado} conectada correctamente ({len(df_asistencia)} empleados cargados). ¿Qué deseas consultar hoy?"}
         ]
 
-    # Actualizar mensaje de bienvenida si se cambia de mes
     if len(st.session_state.mensajes) > 0 and st.session_state.mensajes[0]["rol"] == "assistant" and "conectada correctamente" in st.session_state.mensajes[0]["contenido"]:
         st.session_state.mensajes[0]["contenido"] = f"👋 ¡Hola, Norelly! Base de datos de {mes_seleccionado} conectada correctamente ({len(df_asistencia)} empleados cargados). ¿Qué deseas consultar hoy?"
 
@@ -137,9 +157,9 @@ if clave_ingresada == st.secrets["CLAVE_ACCESO"]:
                 Pregunta del usuario: "{pregunta}"
 
                 Instrucciones estrictas:
-                1. Revisa detenidamente los datos para dar una respuesta exacta. Cada fila es un trabajador y las columnas corresponden a las fechas.
+                1. Revisa detenidamente los datos para dar una respuesta exacta. Cada fila es un trabajador y las últimas dos columnas corresponden al Ingreso y Salida de la fecha solicitada.
                 2. Responde de manera directa, clara y ordenada, usando listas o tablas en Markdown.
-                3. Si el usuario pregunta por faltas, busca "FAL" o "F" en las columnas de la fecha indicada.
+                3. Si el usuario pregunta por faltas, busca "FAL", "F", o "FALTA" en las columnas de Ingreso o Salida.
                 4. Si el usuario pregunta por descansos médicos, busca "DM".
                 """
                 
