@@ -8,6 +8,7 @@ import requests
 import json
 import uuid
 
+# === GENERADOR DE PDF NATIVO ===
 try:
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -18,11 +19,15 @@ try:
 except ImportError:
     PDF_ACTIVO = False
 
-URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbwoJ1ELyLOwr1ORFcWUcnwrcQpsyKj-6_0obweEBnq9P8HqdLlNQCAe8IDMdk8R4nIR/exec"
+# === ENLACES OFICIALES DE GOOGLE SHEETS ===
+# ¡URL ACTUALIZADA CON EL NUEVO DEPLOYMENT DE APPS SCRIPT!
+URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbwodCUKKTc0M1zY23bzMN3TZbsrH4BzwV32JcrSuUpv6_YTTuswbmhlk1IU8Dk4jA77/exec"
 URL_CSV_USUARIOS = "https://docs.google.com/spreadsheets/d/13e2p-qGmZrcUNERjJR9j-BUyGakT0Xsp1pffwZUfreM/export?format=csv&gid=1575432411"
+# ========================================================
 
 st.set_page_config(page_title="SIMA - Intranet Talleres UNALM", layout="wide", initial_sidebar_state="expanded")
 
+# --- FUNCIONES DE BASE DE DATOS (NUBE) ---
 @st.cache_data(ttl=60)
 def cargar_docentes():
     try:
@@ -84,7 +89,7 @@ def cargar_reservas():
             df["Estado"] = df["Estado"].replace("", "Activa")
             return df
     except Exception:
-        pass
+        st.sidebar.error("Problema de conexión con Google Sheets.")
         
     return pd.DataFrame(columns=[
         "ID_Reserva", "Semana", "Día", "Horario", "Profesor", "Ambientes", 
@@ -94,35 +99,47 @@ def cargar_reservas():
 
 def guardar_reservas_en_nube(df):
     try:
-        df = df.fillna("")
         registros = df.to_dict(orient='records')
         payload = {"action": "save", "reservas": registros}
-        requests.post(URL_APPS_SCRIPT, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=15)
+        requests.post(URL_APPS_SCRIPT, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=10)
         return True
     except Exception:
         return False
 
-if "rol_actual" not in st.session_state: st.session_state.rol_actual = None  
-if "usuario_actual" not in st.session_state: st.session_state.usuario_actual = ""
-if "nombre_saludo" not in st.session_state: st.session_state.nombre_saludo = ""
-if "nombre_oficial" not in st.session_state: st.session_state.nombre_oficial = ""
-if "form_key" not in st.session_state: st.session_state.form_key = 0
-if "mostrar_exito" not in st.session_state: st.session_state.mostrar_exito = False
+# --- VARIABLES DE ESTADO DE SESIÓN ---
+if "rol_actual" not in st.session_state:
+    st.session_state.rol_actual = None  
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = ""
+if "nombre_saludo" not in st.session_state:
+    st.session_state.nombre_saludo = ""
+if "nombre_oficial" not in st.session_state:
+    st.session_state.nombre_oficial = ""
+if "form_key" not in st.session_state:
+    st.session_state.form_key = 0
+if "mostrar_exito" not in st.session_state:
+    st.session_state.mostrar_exito = False
 if "reservas" not in st.session_state or st.session_state.reservas.empty:
     st.session_state.reservas = cargar_reservas()
 
+# ==========================================
+# LÓGICA DE TIEMPO: SINCRONIZACIÓN DE SEMANA
+# ==========================================
 tz_lima = pytz.timezone('America/Lima')
 ahora = datetime.now(tz_lima)
-wd = ahora.weekday()
+wd = ahora.weekday()  # 0=Lunes, 1=Martes, 2=Miércoles, 3=Jueves, 4=Viernes, 5=Sábado, 6=Domingo
 
+# De Lunes a Jueves (y Viernes antes de las 8:00 AM): semana actual en curso
 if wd in [0, 1, 2, 3] or (wd == 4 and ahora.hour < 8):
     lunes_obj = ahora - timedelta(days=wd)
 else:
+    # A partir del Viernes 8:00 AM, Sábado y Domingo: salta a la semana entrante
     dias_al_lunes = 7 - wd
     lunes_obj = ahora + timedelta(days=dias_al_lunes)
 
 viernes_obj = lunes_obj + timedelta(days=4)
 str_semana = f"Semana del {lunes_obj.strftime('%d/%m')} al {viernes_obj.strftime('%d/%m')}"
+
 formulario_cerrado = (wd == 4 and ahora.hour < 8)
 
 dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
@@ -160,10 +177,12 @@ def obtener_color_profesor(prof_nombre):
     if "ALATA" in prof_upper: return "#9BF6FF"          
     return "#E5E5E5"                                    
 
+# --- ESTILO VISUAL CORREGIDO (SIN HUECO LATERAL) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Grand+Hotel&display=swap');
     
+    /* Configuración responsiva de la barra lateral */
     section[data-testid="stSidebar"] {
         background-color: #006b3f !important;
     }
@@ -220,6 +239,7 @@ st.markdown("""
     <div class="marca-de-agua">Desarrollado por <b>Norelly Cárdenas</b></div>
 """, unsafe_allow_html=True)
 
+# FILTRO GLOBAL: Mostrar reservas activas de la semana en curso
 if not st.session_state.reservas.empty:
     df_validas = st.session_state.reservas[
         (st.session_state.reservas["Estado"] != "Eliminado") & 
@@ -228,6 +248,7 @@ if not st.session_state.reservas.empty:
 else:
     df_validas = pd.DataFrame()
 
+# --- MENÚ LATERAL DE AUTENTICACIÓN ---
 st.sidebar.markdown("### 🚜 SIMA - UNALM")
 st.sidebar.markdown("Sistema de Maquinaria Agrícola.")
 st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -276,7 +297,11 @@ else:
         else:
             st.sidebar.error("Usuario o contraseña incorrectos.")
 
+# ==========================================
+# VISTA 1: ADMINISTRADOR (CONTROL TOTAL)
+# ==========================================
 if st.session_state.rol_actual == "Admin":
+    
     if "NORELLY" in st.session_state.nombre_saludo.upper():
         st.markdown(f'<div class="saludo-ios">Bienvenida Ing. {st.session_state.nombre_saludo}</div>', unsafe_allow_html=True)
     elif "MARGARITA" in st.session_state.nombre_saludo.upper():
