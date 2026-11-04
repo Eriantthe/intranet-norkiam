@@ -23,6 +23,7 @@ except ImportError:
 URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbwodCUKKTc0M1zY23bzMN3TZbsrH4BzwV32JcrSuUpv6_YTTuswbmhlk1IU8Dk4jA77/exec"
 URL_CSV_USUARIOS = "https://docs.google.com/spreadsheets/d/13e2p-qGmZrcUNERjJR9j-BUyGakT0Xsp1pffwZUfreM/export?format=csv&gid=1575432411"
 
+# --- CONFIGURACIÓN DE PÁGINA (Amplia por defecto) ---
 st.set_page_config(page_title="SIMA - Intranet Talleres UNALM", layout="wide", initial_sidebar_state="expanded")
 
 # --- FUNCIONES DE BASE DE DATOS (NUBE) ---
@@ -36,6 +37,7 @@ def cargar_docentes():
             if any("dni" in v for v in valores) or any("nombres" in v for v in valores) or any("patern" in v for v in valores):
                 fila_head = idx
                 break
+        
         df.columns = df.iloc[fila_head].astype(str).str.strip()
         df = df.iloc[fila_head+1:].dropna(how="all")
         
@@ -68,33 +70,25 @@ def cargar_docentes():
 
 def cargar_reservas():
     try:
-        # Petición a la base de datos de Google con alertas visuales
-        r = requests.get(URL_APPS_SCRIPT, timeout=15, allow_redirects=True)
-        if r.status_code != 200:
-            st.sidebar.error(f"❌ Error de red: Google respondió con código {r.status_code}")
-        else:
-            try:
-                data = r.json()
-                if isinstance(data, list):
-                    if len(data) > 0:
-                        df = pd.DataFrame(data)
-                        for col in ["Estado", "Eliminado_por", "Fecha_Eliminacion"]:
-                            if col not in df.columns: df[col] = ""
-                        if "Materiales" not in df.columns: df["Materiales"] = "(Ninguno)"
-                        if "Semana" not in df.columns: df["Semana"] = "Historial"
-                        if "ID_Reserva" not in df.columns: df["ID_Reserva"] = [str(uuid.uuid4()) for _ in range(len(df))]
-                        df["Estado"] = df["Estado"].replace("", "Activa")
-                        return df
-                    else:
-                        return pd.DataFrame() # Está vacío pero conectó bien
-                else:
-                    st.sidebar.error("❌ Google bloqueó la lectura (Revisa que el script se ejecute como 'Yo' y acceso a 'Cualquier persona').")
-            except Exception:
-                st.sidebar.error("❌ Google no devolvió datos válidos. Seguro mostró una página de inicio de sesión por falta de permisos.")
-    except Exception as e:
-        st.sidebar.error(f"❌ Fallo de conexión con Google: {e}")
+        r = requests.get(URL_APPS_SCRIPT, timeout=10)
+        data = r.json()
+        if len(data) > 0:
+            df = pd.DataFrame(data)
+            for col in ["Estado", "Eliminado_por", "Fecha_Eliminacion"]:
+                if col not in df.columns:
+                    df[col] = ""
+            if "Materiales" not in df.columns:
+                df["Materiales"] = "(Ninguno)"
+            if "Semana" not in df.columns:
+                df["Semana"] = "Historial"
+            if "ID_Reserva" not in df.columns:
+                df["ID_Reserva"] = [str(uuid.uuid4()) for _ in range(len(df))]
+            
+            df["Estado"] = df["Estado"].replace("", "Activa")
+            return df
+    except Exception:
+        pass
         
-    # Si falla, devuelve estructura vacía pero muestra el error arriba
     return pd.DataFrame(columns=[
         "ID_Reserva", "Semana", "Día", "Horario", "Profesor", "Ambientes", 
         "Equipos", "Materiales", "Operario", "Fecha/Hora Registro",
@@ -114,33 +108,40 @@ def guardar_reservas_en_nube(df):
     except Exception:
         return False
 
-# --- VARIABLES DE ESTADO ---
+# --- VARIABLES DE ESTADO DE SESIÓN ---
 if "rol_actual" not in st.session_state: st.session_state.rol_actual = None  
 if "usuario_actual" not in st.session_state: st.session_state.usuario_actual = ""
 if "nombre_saludo" not in st.session_state: st.session_state.nombre_saludo = ""
 if "nombre_oficial" not in st.session_state: st.session_state.nombre_oficial = ""
 if "form_key" not in st.session_state: st.session_state.form_key = 0
 if "mostrar_exito" not in st.session_state: st.session_state.mostrar_exito = False
-
 if "reservas" not in st.session_state or st.session_state.reservas.empty:
     st.session_state.reservas = cargar_reservas()
 
 # ==========================================
-# CÁLCULO DE LA SEMANA
+# LÓGICA DE TIEMPO: SINCRONIZACIÓN DE SEMANA CORREGIDA (LIMA)
 # ==========================================
 tz_lima = pytz.timezone('America/Lima')
-ahora = datetime.now(tz_lima)
-wd = ahora.weekday()
+ahora_utc = datetime.utcnow()
+ahora = ahora_utc.replace(tzinfo=pytz.utc).astimezone(tz_lima)
 
-if wd in [0, 1, 2, 3] or (wd == 4 and ahora.hour < 8):
+wd = ahora.weekday() # 0=Lunes, 1=Martes, 2=Miércoles, 3=Jueves, 4=Viernes, 5=Sábado, 6=Domingo
+hora_actual = ahora.hour
+
+# Solo saltará a la siguiente semana el Viernes (4) a partir de las 8 AM, Sábado (5) o Domingo (6).
+if wd < 4 or (wd == 4 and hora_actual < 8): 
+    # Muestra la semana actual
     lunes_obj = ahora - timedelta(days=wd)
 else:
+    # Salta a la próxima semana
     dias_al_lunes = 7 - wd
     lunes_obj = ahora + timedelta(days=dias_al_lunes)
 
 viernes_obj = lunes_obj + timedelta(days=4)
 str_semana = f"Semana del {lunes_obj.strftime('%d/%m')} al {viernes_obj.strftime('%d/%m')}"
-formulario_cerrado = (wd == 4 and ahora.hour < 8)
+
+# El formulario se cierra el jueves a medianoche (Viernes de 00:00 a 07:59 am)
+formulario_cerrado = (wd == 4 and hora_actual < 8)
 
 dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
 horas = ["08:00 am - 09:50 am", "11:00 am - 12:50 pm", "02:00 pm - 03:50 pm", "04:00 pm - 05:50 pm"]
@@ -151,6 +152,7 @@ equipos_base = [
     "SOLD TIG", "SOLD MIG/MAG", "TORNO", "FRESADORA", "ESMERIL", "PRENSA HIDRAULICA", 
     "REMACHADORA", "FRAGUA", "MAQUETA MOTOR"
 ]
+
 profesores_lista = [
     "ROJAS ALEJANDRO, FRANCISCO", "GARCIA ARMAS, JUVENAL", "ALTAMIRANO CHUNGA, LUIS", 
     "CACERES GUERRERO, FREDY", "CHEVARRIA MOSCOSO, MARGARITA", "REBAZA PINO, ALFREDO", 
@@ -161,31 +163,47 @@ profesores_lista = [
 def obtener_color_profesor(prof_nombre):
     prof_upper = str(prof_nombre).upper()
     if "ROJAS" in prof_upper: return "#FFD1DC"          
-    if "GARCIA" in prof_upper: return "#B5EAD7" 
+    if "GARCIA" in prof_upper or "GARCÍA" in prof_upper: return "#B5EAD7" 
     if "ALTAMIRANO" in prof_upper: return "#FFEAA7"     
-    if "CACERES" in prof_upper: return "#DFCCF1" 
-    if "CHEVARRIA" in prof_upper: return "#FFD8B1" 
+    if "CACERES" in prof_upper or "CÁCERES" in prof_upper: return "#DFCCF1" 
+    if "CHEVARRIA" in prof_upper or "CHEVARRÍA" in prof_upper: return "#FFD8B1" 
     if "REBAZA" in prof_upper: return "#C7CEEA"         
     if "ZINGG" in prof_upper: return "#E2F0CB"          
     if "ORELLANA" in prof_upper: return "#A0C4FF"       
     if "SALAS PEÑA" in prof_upper: return "#FDFFB6"     
     if "SALAS PINTO" in prof_upper: return "#FF9AA2"    
     if "RUBIO" in prof_upper: return "#CAFFBF"          
-    if "YARIN" in prof_upper: return "#FFC6FF" 
+    if "YARIN" in prof_upper or "YARÍN" in prof_upper: return "#FFC6FF" 
     if "NORELLY" in prof_upper: return "#FFB703"        
     if "ALATA" in prof_upper: return "#9BF6FF"          
     return "#E5E5E5"                                    
 
+# --- ESTILO VISUAL CORREGIDO (Márgenes dinámicos) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Grand+Hotel&display=swap');
-    section[data-testid="stSidebar"] { background-color: #006b3f !important; }
-    section[data-testid="stSidebar"][aria-expanded="true"] { width: 380px !important; min-width: 380px !important; }
+    
+    /* Configuración de la barra lateral (Se eliminó el !important para permitir la contracción nativa) */
+    section[data-testid="stSidebar"] {
+        background-color: #006b3f !important;
+        width: 380px;
+    }
+    
+    /* Permite que el bloque principal ocupe el 100% de la pantalla cuando la barra se oculta */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+        padding-left: 3rem !important;
+        padding-right: 3rem !important;
+        max-width: 100% !important;
+    }
+    
     [data-testid="stSidebar"] .stMarkdown p, [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: white !important; }
     [data-testid="stSidebar"] label p { color: white !important; }
     input { color: black !important; background-color: white !important; }
     .stDataFrame { border: 2px solid #e6e6e6; border-radius: 8px; }
     div.stButton > button:first-child { background-color: #006b3f; color: white; border-color: #006b3f; font-weight: bold; }
+    
     .caja-sesion { background-color: #e8f5e9; color: #006b3f; padding: 15px; border-radius: 10px; font-weight: bold; text-align: center; margin-bottom: 20px; border: 2px solid #69f0ae; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
     .saludo-ios { font-family: 'Grand Hotel', cursive; font-size: 55px; font-weight: 400; background: linear-gradient(90deg, #002b12 0%, #008f4c 50%, #69f0ae 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-top: -20px; margin-bottom: 35px; line-height: 1.3; padding: 5px 25px 5px 5px; display: inline-block; }
     .bloque-dia { background-color: #e8f5e9; padding: 15px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px; border-left: 6px solid #006b3f;}
@@ -196,17 +214,32 @@ st.markdown("""
     .icono-fluido { font-size: 40px; margin-bottom: 5px; }
     .valor-fluido { font-size: 24px; font-weight: bold; color: #2c3e50; margin: 0; }
     .titulo-fluido { font-size: 12px; color: #7f8c8d; text-transform: uppercase; font-weight: bold; letter-spacing: 0.5px;}
+    
     .stTabs [data-baseweb="tab-list"] { gap: 15px; overflow-x: visible !important; }
     .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 8px 8px 0px 0px; padding: 12px 25px !important; font-weight: bold !important; font-size: 17px !important; min-width: fit-content !important; white-space: nowrap !important; overflow: visible !important; }
     .stTabs [data-baseweb="tab"] span { overflow: visible !important; white-space: nowrap !important; }
     .stTabs [aria-selected="true"] { background-color: #006b3f !important; color: white !important; border-bottom: 4px solid #69f0ae !important; }
-    @media (max-width: 768px) { section[data-testid="stSidebar"][aria-expanded="true"] { width: 100% !important; min-width: 100% !important; } }
-    .marca-de-agua { position: fixed; bottom: 25px; left: 25px; font-family: Arial, sans-serif; font-size: 13px; color: #7f8c8d; background-color: rgba(255, 255, 255, 0.8); padding: 5px 10px; border-radius: 8px; box-shadow: 0px 2px 5px rgba(0,0,0,0.1); z-index: 9999; pointer-events: none; }
+
+    .marca-de-agua {
+        position: fixed;
+        bottom: 25px; 
+        left: 25px; 
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        color: #7f8c8d;
+        background-color: rgba(255, 255, 255, 0.8);
+        padding: 5px 10px;
+        border-radius: 8px;
+        box-shadow: 0px 2px 5px rgba(0,0,0,0.1);
+        z-index: 9999;
+        pointer-events: none;
+    }
     </style>
+    
     <div class="marca-de-agua">Desarrollado por <b>Norelly Cárdenas</b></div>
 """, unsafe_allow_html=True)
 
-# FILTRO GLOBAL
+# FILTRO GLOBAL: Mostrar reservas activas de la semana calculada en curso
 if not st.session_state.reservas.empty:
     df_validas = st.session_state.reservas[
         (st.session_state.reservas["Estado"] != "Eliminado") & 
@@ -215,7 +248,7 @@ if not st.session_state.reservas.empty:
 else:
     df_validas = pd.DataFrame()
 
-# --- MENÚ LATERAL ---
+# --- MENÚ LATERAL DE AUTENTICACIÓN ---
 st.sidebar.markdown("### 🚜 SIMA - UNALM")
 st.sidebar.markdown("Sistema de Maquinaria Agrícola.")
 st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -264,7 +297,11 @@ else:
         else:
             st.sidebar.error("Usuario o contraseña incorrectos.")
 
+# ==========================================
+# VISTA 1: ADMINISTRADOR (CONTROL TOTAL)
+# ==========================================
 if st.session_state.rol_actual == "Admin":
+    
     if "NORELLY" in st.session_state.nombre_saludo.upper():
         st.markdown(f'<div class="saludo-ios">Bienvenida Ing. {st.session_state.nombre_saludo}</div>', unsafe_allow_html=True)
     elif "MARGARITA" in st.session_state.nombre_saludo.upper():
@@ -430,7 +467,12 @@ if st.session_state.rol_actual == "Admin":
         df_mostrar = df_validas[[c for c in columnas_orden if c in df_validas.columns]].copy()
         df_mostrar.insert(0, "❌ Borrar", False)
         
-        df_editado = st.data_editor(df_mostrar, use_container_width=True, hide_index=True, column_config={"ID_Reserva": None})
+        df_editado = st.data_editor(
+            df_mostrar, 
+            use_container_width=True, 
+            hide_index=True, 
+            column_config={"ID_Reserva": None}
+        )
         
         if st.button("🗑️ Procesar Eliminaciones en la Nube"):
             with st.spinner('⏳ Archivando registros en la nube...'):
@@ -573,7 +615,7 @@ if st.session_state.rol_actual == "Admin":
             st.session_state.mostrar_exito = False
         
         if formulario_cerrado:
-            st.error("🔒 **SISTEMA CERRADO.** El plazo para reservas venció el jueves a la medianoche.")
+            st.error("🔒 **SISTEMA CERRADO.** El plazo para reservas venció el jueves a la medianoche. El sistema se reabrirá el viernes a las 8:00 am para la próxima semana.")
         else:
             st.info(f"✅ **SISTEMA ABIERTO.** Registrando horarios para la **{str_semana}**.")
             st.warning("⏱️ **RECORDATORIO IMPORTANTE:** El horario se cierra los **jueves a la medianoche (12:00 am)** y los **viernes desde las 8:00 am** inicia el registro de la siguiente semana.")
@@ -668,6 +710,7 @@ if st.session_state.rol_actual == "Admin":
                         tag_op = " [Operario: SÍ]" if res["Operario"] == "Sí" else ""
                         texto_celda_azul = f"🔵 SU SELECCIÓN:\nAmb: {res['Ambientes']}\nEq: {res['Equipos']}{tag_op}"
                         actual = df_horario_visual.at[res["Horario"], res["Día"]]
+                        
                         if "🟢" in str(actual): 
                             df_horario_visual.at[res["Horario"], res["Día"]] = texto_celda_azul
                         else: 
@@ -678,27 +721,49 @@ if st.session_state.rol_actual == "Admin":
                     placeholder_exito = st.empty()
                     if st.button("✅ Confirmar Separación Definitiva", use_container_width=True, key="btn_admin_save"):
                         with st.spinner("⏳ Guardando en la nube..."):
+                            cruces = []
+                            
                             st.cache_data.clear()
                             df_remoto_actualizado = cargar_reservas()
                             st.session_state.reservas = df_remoto_actualizado
                             
-                            df_nuevas = pd.DataFrame(reservas_temporales)
-                            if not st.session_state.reservas.empty:
-                                df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
-                            else:
-                                df_final = df_nuevas
+                            df_validas_refresh = st.session_state.reservas[
+                                (st.session_state.reservas["Estado"] != "Eliminado") & 
+                                (st.session_state.reservas["Semana"] == str_semana)
+                            ] if not st.session_state.reservas.empty else pd.DataFrame()
                             
-                            if guardar_reservas_en_nube(df_final):
-                                st.cache_data.clear()
-                                st.session_state.reservas = cargar_reservas()
-                                st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
-                                placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
-                                time.sleep(2)
-                                st.session_state.form_key += 1
-                                st.session_state.mostrar_exito = True
-                                st.rerun()
-                            else: 
-                                st.error("Error guardando en Google Sheets.")
+                            for res in reservas_temporales:
+                                d, h = res["Día"], res["Horario"]
+                                if not df_validas_refresh.empty:
+                                    for _, act in df_validas_refresh[(df_validas_refresh["Día"] == d) & (df_validas_refresh["Horario"] == h)].iterrows():
+                                        amb_act = set([a.strip() for a in str(act["Ambientes"]).split(",") if a.strip() and a.strip() != "(Ninguno)"])
+                                        eq_act = set([e.strip() for e in str(act["Equipos"]).split(",") if e.strip() and e.strip() != "(Ninguno)"])
+                                        if [a for a in res["List_Amb"] if a in amb_act and a != "Campo"] or [e for e in res["List_Eq"] if e in eq_act and e != "Ningún Equipo en particular"]:
+                                            cruces.append(f"{d} a las {h}")
+                            
+                            if cruces: 
+                                st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
+                            else:
+                                for r in reservas_temporales:
+                                    del r["List_Amb"]; del r["List_Eq"]
+                                
+                                df_nuevas = pd.DataFrame(reservas_temporales)
+                                if not st.session_state.reservas.empty:
+                                    df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
+                                else:
+                                    df_final = df_nuevas
+                                
+                                if guardar_reservas_en_nube(df_final):
+                                    st.cache_data.clear()
+                                    st.session_state.reservas = cargar_reservas()
+                                    st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
+                                    placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
+                                    time.sleep(2)
+                                    st.session_state.form_key += 1
+                                    st.session_state.mostrar_exito = True
+                                    st.rerun()
+                                else: 
+                                    st.error("Error guardando en Google Sheets.")
 
 elif st.session_state.rol_actual == "Docente":
 
@@ -718,7 +783,7 @@ elif st.session_state.rol_actual == "Docente":
             st.session_state.mostrar_exito = False
         
         if formulario_cerrado:
-            st.error("🔒 **SISTEMA CERRADO.** El plazo para reservas venció el jueves a la medianoche.")
+            st.error("🔒 **SISTEMA CERRADO.** El plazo para reservas venció el jueves a la medianoche. El sistema se reabrirá el viernes a las 8:00 am para la próxima semana.")
         else:
             st.info(f"✅ **SISTEMA ABIERTO.** Registrando horarios para la **{str_semana}**.")
             st.warning("⏱️ **RECORDATORIO IMPORTANTE:** El horario se cierra los **jueves a la medianoche (12:00 am)** y los **viernes desde las 8:00 am** inicia el registro de la siguiente semana.")
@@ -810,6 +875,7 @@ elif st.session_state.rol_actual == "Docente":
                         tag_op = " [Operario: SÍ]" if res["Operario"] == "Sí" else ""
                         texto_celda_azul = f"🔵 SU SELECCIÓN:\nAmb: {res['Ambientes']}\nEq: {res['Equipos']}{tag_op}"
                         actual = df_horario_visual.at[res["Horario"], res["Día"]]
+                        
                         if "🟢" in str(actual): 
                             df_horario_visual.at[res["Horario"], res["Día"]] = texto_celda_azul
                         else: 
@@ -820,27 +886,49 @@ elif st.session_state.rol_actual == "Docente":
                     placeholder_exito = st.empty()
                     if st.button("✅ Confirmar Separación Definitiva", use_container_width=True):
                         with st.spinner("⏳ Guardando en la nube..."):
+                            cruces = []
+                            
                             st.cache_data.clear()
                             df_remoto_actualizado = cargar_reservas()
                             st.session_state.reservas = df_remoto_actualizado
                             
-                            df_nuevas = pd.DataFrame(reservas_temporales)
-                            if not st.session_state.reservas.empty:
-                                df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
-                            else:
-                                df_final = df_nuevas
+                            df_validas_refresh = st.session_state.reservas[
+                                (st.session_state.reservas["Estado"] != "Eliminado") & 
+                                (st.session_state.reservas["Semana"] == str_semana)
+                            ] if not st.session_state.reservas.empty else pd.DataFrame()
                             
-                            if guardar_reservas_en_nube(df_final):
-                                st.cache_data.clear()
-                                st.session_state.reservas = cargar_reservas()
-                                st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
-                                placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
-                                time.sleep(2)
-                                st.session_state.form_key += 1
-                                st.session_state.mostrar_exito = True
-                                st.rerun()
-                            else: 
-                                st.error("Error guardando en Google Sheets.")
+                            for res in reservas_temporales:
+                                d, h = res["Día"], res["Horario"]
+                                if not df_validas_refresh.empty:
+                                    for _, act in df_validas_refresh[(df_validas_refresh["Día"] == d) & (df_validas_refresh["Horario"] == h)].iterrows():
+                                        amb_act = set([a.strip() for a in str(act["Ambientes"]).split(",") if a.strip() and a.strip() != "(Ninguno)"])
+                                        eq_act = set([e.strip() for e in str(act["Equipos"]).split(",") if e.strip() and e.strip() != "(Ninguno)"])
+                                        if [a for a in res["List_Amb"] if a in amb_act and a != "Campo"] or [e for e in res["List_Eq"] if e in eq_act and e != "Ningún Equipo en particular"]:
+                                            cruces.append(f"{d} a las {h}")
+                            
+                            if cruces: 
+                                st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
+                            else:
+                                for r in reservas_temporales:
+                                    del r["List_Amb"]; del r["List_Eq"]
+                                
+                                df_nuevas = pd.DataFrame(reservas_temporales)
+                                if not st.session_state.reservas.empty:
+                                    df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
+                                else:
+                                    df_final = df_nuevas
+                                
+                                if guardar_reservas_en_nube(df_final):
+                                    st.cache_data.clear()
+                                    st.session_state.reservas = cargar_reservas()
+                                    st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
+                                    placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
+                                    time.sleep(2)
+                                    st.session_state.form_key += 1
+                                    st.session_state.mostrar_exito = True
+                                    st.rerun()
+                                else: 
+                                    st.error("Error guardando en Google Sheets.")
 
     with tab_mis_reservas:
         st.subheader(f"🗑️ Anular Mis Reservas Activas ({str_semana})")
@@ -888,30 +976,13 @@ elif st.session_state.rol_actual == "Docente":
         else:
             st.info("No tiene reservas activas programadas en este momento.")
 
+# ==========================================
+# VISTA 3: PÚBLICA (SIN LOGUEARSE)
+# ==========================================
 else:
     st.title("🚜 SIMA - Intranet de Talleres UNALM")
     st.markdown("### Sistema Oficial de Separación de Maquinaria e Implementos")
     
-    st.markdown("""
-        <style>
-        .marca-de-agua-publica {
-            position: fixed;
-            bottom: 25px; 
-            left: 25px; 
-            font-family: Arial, sans-serif;
-            font-size: 13px;
-            color: #7f8c8d;
-            background-color: rgba(255, 255, 255, 0.8);
-            padding: 5px 10px;
-            border-radius: 8px;
-            box-shadow: 0px 2px 5px rgba(0,0,0,0.1);
-            z-index: 9999;
-            pointer-events: none;
-        }
-        </style>
-        <div class="marca-de-agua-publica">Desarrollado por <b>Norelly Cárdenas</b></div>
-    """, unsafe_allow_html=True)
-
     st.info("👈 Por favor, ingrese sus credenciales en el menú lateral izquierdo para acceder a su perfil y separar recursos.")
     st.warning("⏱️ **RECORDATORIO IMPORTANTE:** El horario se cierra los **jueves a la medianoche (12:00 am)** y los **viernes desde las 8:00 am** inicia el registro de la siguiente semana.")
     
