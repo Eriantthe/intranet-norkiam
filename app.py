@@ -99,10 +99,14 @@ def cargar_reservas():
 
 def guardar_reservas_en_nube(df):
     try:
+        df = df.fillna("")
         registros = df.to_dict(orient='records')
         payload = {"action": "save", "reservas": registros}
-        requests.post(URL_APPS_SCRIPT, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=10)
-        return True
+        resp = requests.post(URL_APPS_SCRIPT, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=15)
+        if resp.status_code == 200:
+            resultado = resp.json()
+            return resultado.get("status") == "success"
+        return False
     except Exception:
         return False
 
@@ -177,7 +181,7 @@ def obtener_color_profesor(prof_nombre):
     if "ALATA" in prof_upper: return "#9BF6FF"          
     return "#E5E5E5"                                    
 
-# --- ESTILO VISUAL CORREGIDO (SIN HUECO LATERAL) ---
+# --- ESTILO VISUAL CORREGIDO (SIN HUECO LATERAL Y MARCA MOVIL) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Grand+Hotel&display=swap');
@@ -239,7 +243,7 @@ st.markdown("""
     <div class="marca-de-agua">Desarrollado por <b>Norelly Cárdenas</b></div>
 """, unsafe_allow_html=True)
 
-# FILTRO GLOBAL: Mostrar reservas activas de la semana en curso
+# FILTRO GLOBAL: Mostrar reservas activas de la semana calculada en curso
 if not st.session_state.reservas.empty:
     df_validas = st.session_state.reservas[
         (st.session_state.reservas["Estado"] != "Eliminado") & 
@@ -490,6 +494,8 @@ if st.session_state.rol_actual == "Admin":
                             st.session_state.reservas.at[idx, "Fecha_Eliminacion"] = ts_elim
                         
                     if guardar_reservas_en_nube(st.session_state.reservas):
+                        st.cache_data.clear()
+                        st.session_state.reservas = cargar_reservas()
                         st.success("✅ Reservas enviadas a la papelera.")
                         time.sleep(2)
                         st.rerun()
@@ -620,6 +626,7 @@ if st.session_state.rol_actual == "Admin":
             
             if st.button("🔄 Actualizar Disponibilidad (Admin)"):
                 with st.spinner("🔄 Actualizando..."):
+                    st.cache_data.clear()
                     st.session_state.reservas = cargar_reservas()
                 st.rerun()
                 
@@ -720,13 +727,18 @@ if st.session_state.rol_actual == "Admin":
                     if st.button("✅ Confirmar Separación Definitiva", use_container_width=True, key="btn_admin_save"):
                         with st.spinner("⏳ Guardando en la nube..."):
                             cruces = []
-                            st.session_state.reservas = cargar_reservas()
+                            
+                            # 1. Cargar remoto fresco
+                            st.cache_data.clear()
+                            df_remoto_actualizado = cargar_reservas()
+                            st.session_state.reservas = df_remoto_actualizado
                             
                             df_validas_refresh = st.session_state.reservas[
                                 (st.session_state.reservas["Estado"] != "Eliminado") & 
                                 (st.session_state.reservas["Semana"] == str_semana)
                             ] if not st.session_state.reservas.empty else pd.DataFrame()
                             
+                            # 2. Comprobar cruces
                             for res in reservas_temporales:
                                 d, h = res["Día"], res["Horario"]
                                 if not df_validas_refresh.empty:
@@ -736,21 +748,35 @@ if st.session_state.rol_actual == "Admin":
                                         if [a for a in res["List_Amb"] if a in amb_act and a != "Campo"] or [e for e in res["List_Eq"] if e in eq_act and e != "Ningún Equipo en particular"]:
                                             cruces.append(f"{d} a las {h}")
                             
-                            if cruces: st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
+                            if cruces: 
+                                st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
                             else:
                                 for r in reservas_temporales:
                                     del r["List_Amb"]; del r["List_Eq"]
-                                df_final = pd.concat([st.session_state.reservas, pd.DataFrame(reservas_temporales)], ignore_index=True)
+                                
+                                # 3. Juntar todo
+                                df_nuevas = pd.DataFrame(reservas_temporales)
+                                if not st.session_state.reservas.empty:
+                                    df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
+                                else:
+                                    df_final = df_nuevas
+                                
+                                # 4. Guardar y refrescar vista instantaneamente
                                 if guardar_reservas_en_nube(df_final):
-                                    st.session_state.reservas = df_final
+                                    st.cache_data.clear()
+                                    st.session_state.reservas = cargar_reservas()
                                     st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
                                     placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
-                                    time.sleep(4)
+                                    time.sleep(2)
                                     st.session_state.form_key += 1
                                     st.session_state.mostrar_exito = True
                                     st.rerun()
-                                else: st.error("Error guardando en Google Sheets.")
+                                else: 
+                                    st.error("Error guardando en Google Sheets.")
 
+# ==========================================
+# VISTA 2: DOCENTE NORMAL (CON PESTAÑA PARA BORRAR SUS RESERVAS)
+# ==========================================
 elif st.session_state.rol_actual == "Docente":
 
     if "MARGARITA" in st.session_state.nombre_saludo.upper():
@@ -776,6 +802,7 @@ elif st.session_state.rol_actual == "Docente":
             
             if st.button("🔄 Actualizar Disponibilidad"):
                 with st.spinner("🔄 Actualizando base de datos..."):
+                    st.cache_data.clear()
                     st.session_state.reservas = cargar_reservas()
                 st.rerun()
                 
@@ -873,13 +900,18 @@ elif st.session_state.rol_actual == "Docente":
                     if st.button("✅ Confirmar Separación Definitiva", use_container_width=True):
                         with st.spinner("⏳ Guardando en la nube..."):
                             cruces = []
-                            st.session_state.reservas = cargar_reservas()
+                            
+                            # 1. Cargar remoto fresco
+                            st.cache_data.clear()
+                            df_remoto_actualizado = cargar_reservas()
+                            st.session_state.reservas = df_remoto_actualizado
                             
                             df_validas_refresh = st.session_state.reservas[
                                 (st.session_state.reservas["Estado"] != "Eliminado") & 
                                 (st.session_state.reservas["Semana"] == str_semana)
                             ] if not st.session_state.reservas.empty else pd.DataFrame()
                             
+                            # 2. Comprobar cruces
                             for res in reservas_temporales:
                                 d, h = res["Día"], res["Horario"]
                                 if not df_validas_refresh.empty:
@@ -888,21 +920,32 @@ elif st.session_state.rol_actual == "Docente":
                                         eq_act = set([e.strip() for e in str(act["Equipos"]).split(",") if e.strip() and e.strip() != "(Ninguno)"])
                                         if [a for a in res["List_Amb"] if a in amb_act and a != "Campo"] or [e for e in res["List_Eq"] if e in eq_act and e != "Ningún Equipo en particular"]:
                                             cruces.append(f"{d} a las {h}")
-                        
-                        if cruces: st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
-                        else:
-                            for r in reservas_temporales:
-                                del r["List_Amb"]; del r["List_Eq"]
-                            df_final = pd.concat([st.session_state.reservas, pd.DataFrame(reservas_temporales)], ignore_index=True)
-                            if guardar_reservas_en_nube(df_final):
-                                st.session_state.reservas = df_final
-                                st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
-                                placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
-                                time.sleep(4)
-                                st.session_state.form_key += 1
-                                st.session_state.mostrar_exito = True
-                                st.rerun()
-                            else: st.error("Error guardando en Google Sheets.")
+                            
+                            if cruces: 
+                                st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
+                            else:
+                                for r in reservas_temporales:
+                                    del r["List_Amb"]; del r["List_Eq"]
+                                
+                                # 3. Juntar todo
+                                df_nuevas = pd.DataFrame(reservas_temporales)
+                                if not st.session_state.reservas.empty:
+                                    df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
+                                else:
+                                    df_final = df_nuevas
+                                
+                                # 4. Guardar y refrescar vista instantaneamente
+                                if guardar_reservas_en_nube(df_final):
+                                    st.cache_data.clear()
+                                    st.session_state.reservas = cargar_reservas()
+                                    st.toast("✅ ¡Guardado satisfactoriamente!", icon="🎉")
+                                    placeholder_exito.success("✅ ¡Guardado permanentemente en la Nube!")
+                                    time.sleep(2)
+                                    st.session_state.form_key += 1
+                                    st.session_state.mostrar_exito = True
+                                    st.rerun()
+                                else: 
+                                    st.error("Error guardando en Google Sheets.")
 
     with tab_mis_reservas:
         st.subheader(f"🗑️ Anular Mis Reservas Activas ({str_semana})")
@@ -938,6 +981,8 @@ elif st.session_state.rol_actual == "Docente":
                                 st.session_state.reservas.at[idx, "Fecha_Eliminacion"] = ts_elim
                             
                         if guardar_reservas_en_nube(st.session_state.reservas):
+                            st.cache_data.clear()
+                            st.session_state.reservas = cargar_reservas()
                             st.success("✅ Reservas anuladas correctamente. El espacio ya está libre.")
                             time.sleep(2)
                             st.rerun()
@@ -948,6 +993,9 @@ elif st.session_state.rol_actual == "Docente":
         else:
             st.info("No tiene reservas activas programadas en este momento.")
 
+# ==========================================
+# VISTA 3: PÚBLICA (SIN LOGUEARSE)
+# ==========================================
 else:
     st.title("🚜 SIMA - Intranet de Talleres UNALM")
     st.markdown("### Sistema Oficial de Separación de Maquinaria e Implementos")
