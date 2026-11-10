@@ -69,6 +69,11 @@ def cargar_docentes():
         return {}
 
 def cargar_reservas():
+    columnas_base = [
+        "ID_Reserva", "Semana", "Día", "Fecha_Reserva", "Horario", "Profesor", "Ambientes", 
+        "Equipos", "Materiales", "Operario", "Fecha/Hora Registro",
+        "Estado", "Eliminado_por", "Fecha_Eliminacion"
+    ]
     try:
         r = requests.get(URL_APPS_SCRIPT, timeout=10)
         data = r.json()
@@ -91,11 +96,7 @@ def cargar_reservas():
     except Exception:
         pass
         
-    return pd.DataFrame(columns=[
-        "ID_Reserva", "Semana", "Día", "Fecha_Reserva", "Horario", "Profesor", "Ambientes", 
-        "Equipos", "Materiales", "Operario", "Fecha/Hora Registro",
-        "Estado", "Eliminado_por", "Fecha_Eliminacion"
-    ])
+    return pd.DataFrame(columns=columnas_base)
 
 def guardar_reservas_en_nube(df):
     try:
@@ -144,7 +145,7 @@ lunes_obj = ahora + timedelta(days=dias_al_lunes)
 viernes_obj = lunes_obj + timedelta(days=4)
 str_semana = f"Semana del {lunes_obj.strftime('%d/%m')} al {viernes_obj.strftime('%d/%m')}"
 
-# Nueva variable: Fechas exactas del calendario para los días seleccionados
+# Fechas exactas del calendario para los días seleccionados
 fechas_semana = {
     "Lunes": lunes_obj.strftime("%d/%m/%Y"),
     "Martes": (lunes_obj + timedelta(days=1)).strftime("%d/%m/%Y"),
@@ -247,14 +248,26 @@ st.markdown("""
     <div class="marca-de-agua">Desarrollado por <b>Norelly Cárdenas</b></div>
 """, unsafe_allow_html=True)
 
-# FILTRO GLOBAL: Mostrar reservas activas de la semana que se está planificando
+# ==========================================
+# FILTRO GLOBAL (CORREGIDO PARA EVITAR KEYERROR)
+# ==========================================
+columnas_requeridas = [
+    "ID_Reserva", "Semana", "Día", "Fecha_Reserva", "Horario", "Profesor", 
+    "Ambientes", "Equipos", "Materiales", "Operario", "Fecha/Hora Registro", 
+    "Estado", "Eliminado_por", "Fecha_Eliminacion"
+]
+
 if not st.session_state.reservas.empty:
-    df_validas = st.session_state.reservas[
-        (st.session_state.reservas["Estado"] != "Eliminado") & 
-        (st.session_state.reservas["Semana"] == str_semana)
-    ]
+    # Validamos que las columnas mínimas existan antes de filtrar
+    if all(col in st.session_state.reservas.columns for col in ["Estado", "Semana", "Día", "Horario"]):
+        df_validas = st.session_state.reservas[
+            (st.session_state.reservas["Estado"] != "Eliminado") & 
+            (st.session_state.reservas["Semana"] == str_semana)
+        ]
+    else:
+        df_validas = pd.DataFrame(columns=columnas_requeridas)
 else:
-    df_validas = pd.DataFrame()
+    df_validas = pd.DataFrame(columns=columnas_requeridas)
 
 # --- MENÚ LATERAL DE AUTENTICACIÓN ---
 st.sidebar.markdown("### 🚜 SIMA - UNALM")
@@ -743,7 +756,7 @@ if st.session_state.rol_actual == "Admin":
                             df_validas_refresh = st.session_state.reservas[
                                 (st.session_state.reservas["Estado"] != "Eliminado") & 
                                 (st.session_state.reservas["Semana"] == str_semana)
-                            ] if not st.session_state.reservas.empty else pd.DataFrame()
+                            ] if not st.session_state.reservas.empty else pd.DataFrame(columns=columnas_requeridas)
                             
                             for res in reservas_temporales:
                                 d, h = res["Día"], res["Horario"]
@@ -751,7 +764,8 @@ if st.session_state.rol_actual == "Admin":
                                     for _, act in df_validas_refresh[(df_validas_refresh["Día"] == d) & (df_validas_refresh["Horario"] == h)].iterrows():
                                         amb_act = set([a.strip() for a in str(act["Ambientes"]).split(",") if a.strip() and a.strip() != "(Ninguno)"])
                                         eq_act = set([e.strip() for e in str(act["Equipos"]).split(",") if e.strip() and e.strip() != "(Ninguno)"])
-                                        if [a for a in res["List_Amb"] if a in amb_act and a != "Campo"] or [e for e in res["List_Eq"] if e in eq_act and e != "Ningún Equipo en particular"]:
+                                        # Fix variable references in list comprehensions
+                                        if [a for a in [x.strip() for x in res["Ambientes"].split(",")] if a in amb_act and a != "Campo"] or [e for e in [x.strip() for x in res["Equipos"].split(",")] if e in eq_act and e != "Ningún Equipo en particular"]:
                                             cruces.append(f"{d} a las {h}")
                             
                             if cruces: 
@@ -775,6 +789,9 @@ if st.session_state.rol_actual == "Admin":
                                 else: 
                                     st.error("Error guardando en Google Sheets.")
 
+# ==========================================
+# VISTA 2: DOCENTE NORMAL (CON PESTAÑA PARA BORRAR SUS RESERVAS)
+# ==========================================
 elif st.session_state.rol_actual == "Docente":
 
     if "MARGARITA" in st.session_state.nombre_saludo.upper():
@@ -908,7 +925,7 @@ elif st.session_state.rol_actual == "Docente":
                             df_validas_refresh = st.session_state.reservas[
                                 (st.session_state.reservas["Estado"] != "Eliminado") & 
                                 (st.session_state.reservas["Semana"] == str_semana)
-                            ] if not st.session_state.reservas.empty else pd.DataFrame()
+                            ] if not st.session_state.reservas.empty else pd.DataFrame(columns=columnas_requeridas)
                             
                             for res in reservas_temporales:
                                 d, h = res["Día"], res["Horario"]
@@ -916,7 +933,7 @@ elif st.session_state.rol_actual == "Docente":
                                     for _, act in df_validas_refresh[(df_validas_refresh["Día"] == d) & (df_validas_refresh["Horario"] == h)].iterrows():
                                         amb_act = set([a.strip() for a in str(act["Ambientes"]).split(",") if a.strip() and a.strip() != "(Ninguno)"])
                                         eq_act = set([e.strip() for e in str(act["Equipos"]).split(",") if e.strip() and e.strip() != "(Ninguno)"])
-                                        if [a for a in res["List_Amb"] if a in amb_act and a != "Campo"] or [e for e in res["List_Eq"] if e in eq_act and e != "Ningún Equipo en particular"]:
+                                        if [a for a in [x.strip() for x in res["Ambientes"].split(",")] if a in amb_act and a != "Campo"] or [e for e in [x.strip() for x in res["Equipos"].split(",")] if e in eq_act and e != "Ningún Equipo en particular"]:
                                             cruces.append(f"{d} a las {h}")
                             
                             if cruces: 
