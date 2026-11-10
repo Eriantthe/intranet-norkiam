@@ -23,7 +23,7 @@ except ImportError:
 URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbwodCUKKTc0M1zY23bzMN3TZbsrH4BzwV32JcrSuUpv6_YTTuswbmhlk1IU8Dk4jA77/exec"
 URL_CSV_USUARIOS = "https://docs.google.com/spreadsheets/d/13e2p-qGmZrcUNERjJR9j-BUyGakT0Xsp1pffwZUfreM/export?format=csv&gid=1575432411"
 
-# --- CONFIGURACIÓN DE PÁGINA (Amplia por defecto) ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="SIMA - Intranet Talleres UNALM", layout="wide", initial_sidebar_state="expanded")
 
 # --- FUNCIONES DE BASE DE DATOS (NUBE) ---
@@ -81,6 +81,8 @@ def cargar_reservas():
                 df["Materiales"] = "(Ninguno)"
             if "Semana" not in df.columns:
                 df["Semana"] = "Historial"
+            if "Fecha_Reserva" not in df.columns:
+                df["Fecha_Reserva"] = ""
             if "ID_Reserva" not in df.columns:
                 df["ID_Reserva"] = [str(uuid.uuid4()) for _ in range(len(df))]
             
@@ -90,7 +92,7 @@ def cargar_reservas():
         pass
         
     return pd.DataFrame(columns=[
-        "ID_Reserva", "Semana", "Día", "Horario", "Profesor", "Ambientes", 
+        "ID_Reserva", "Semana", "Día", "Fecha_Reserva", "Horario", "Profesor", "Ambientes", 
         "Equipos", "Materiales", "Operario", "Fecha/Hora Registro",
         "Estado", "Eliminado_por", "Fecha_Eliminacion"
     ])
@@ -119,29 +121,37 @@ if "reservas" not in st.session_state or st.session_state.reservas.empty:
     st.session_state.reservas = cargar_reservas()
 
 # ==========================================
-# LÓGICA DE TIEMPO: SINCRONIZACIÓN DE SEMANA CORREGIDA (LIMA)
+# LÓGICA DE TIEMPO (RESERVA CON 1 SEMANA DE ANTICIPACIÓN)
 # ==========================================
 tz_lima = pytz.timezone('America/Lima')
 ahora_utc = datetime.utcnow()
 ahora = ahora_utc.replace(tzinfo=pytz.utc).astimezone(tz_lima)
 
-wd = ahora.weekday() # 0=Lunes, 1=Martes, 2=Miércoles, 3=Jueves, 4=Viernes, 5=Sábado, 6=Domingo
+wd = ahora.weekday() # 0=Lunes, 1=Martes, ..., 6=Domingo
 hora_actual = ahora.hour
 
-# Solo saltará a la siguiente semana el Viernes (4) a partir de las 8 AM, Sábado (5) o Domingo (6).
-if wd < 4 or (wd == 4 and hora_actual < 8): 
-    # Muestra la semana actual
-    lunes_obj = ahora - timedelta(days=wd)
-else:
-    # Salta a la próxima semana
-    dias_al_lunes = 7 - wd
-    lunes_obj = ahora + timedelta(days=dias_al_lunes)
+# El sistema cierra los jueves a medianoche (Viernes de 00:00 a 07:59 am)
+formulario_cerrado = (wd == 4 and hora_actual < 8)
 
+if wd < 4 or formulario_cerrado:
+    # Lunes a Jueves (o Viernes madrugada) -> Se reserva para la PRÓXIMA semana
+    dias_al_lunes = 7 - wd
+else:
+    # Viernes después de las 8am, Sábado y Domingo -> Se reserva para la SUBSIGUIENTE semana
+    dias_al_lunes = 14 - wd
+
+lunes_obj = ahora + timedelta(days=dias_al_lunes)
 viernes_obj = lunes_obj + timedelta(days=4)
 str_semana = f"Semana del {lunes_obj.strftime('%d/%m')} al {viernes_obj.strftime('%d/%m')}"
 
-# El formulario se cierra el jueves a medianoche (Viernes de 00:00 a 07:59 am)
-formulario_cerrado = (wd == 4 and hora_actual < 8)
+# Nueva variable: Fechas exactas del calendario para los días seleccionados
+fechas_semana = {
+    "Lunes": lunes_obj.strftime("%d/%m/%Y"),
+    "Martes": (lunes_obj + timedelta(days=1)).strftime("%d/%m/%Y"),
+    "Miércoles": (lunes_obj + timedelta(days=2)).strftime("%d/%m/%Y"),
+    "Jueves": (lunes_obj + timedelta(days=3)).strftime("%d/%m/%Y"),
+    "Viernes": viernes_obj.strftime("%d/%m/%Y")
+}
 
 dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
 horas = ["08:00 am - 09:50 am", "11:00 am - 12:50 pm", "02:00 pm - 03:50 pm", "04:00 pm - 05:50 pm"]
@@ -178,18 +188,16 @@ def obtener_color_profesor(prof_nombre):
     if "ALATA" in prof_upper: return "#9BF6FF"          
     return "#E5E5E5"                                    
 
-# --- ESTILO VISUAL CORREGIDO (Márgenes dinámicos) ---
+# --- ESTILO VISUAL ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Grand+Hotel&display=swap');
     
-    /* Configuración de la barra lateral (Se eliminó el !important para permitir la contracción nativa) */
     section[data-testid="stSidebar"] {
         background-color: #006b3f !important;
         width: 380px;
     }
     
-    /* Permite que el bloque principal ocupe el 100% de la pantalla cuando la barra se oculta */
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
@@ -239,7 +247,7 @@ st.markdown("""
     <div class="marca-de-agua">Desarrollado por <b>Norelly Cárdenas</b></div>
 """, unsafe_allow_html=True)
 
-# FILTRO GLOBAL: Mostrar reservas activas de la semana calculada en curso
+# FILTRO GLOBAL: Mostrar reservas activas de la semana que se está planificando
 if not st.session_state.reservas.empty:
     df_validas = st.session_state.reservas[
         (st.session_state.reservas["Estado"] != "Eliminado") & 
@@ -463,7 +471,7 @@ if st.session_state.rol_actual == "Admin":
     with tab_reservas:
         st.subheader(f"Borrador de Reservas Activas ({str_semana})")
         
-        columnas_orden = ["ID_Reserva", "Fecha/Hora Registro", "Día", "Horario", "Profesor", "Ambientes", "Equipos", "Materiales", "Operario"]
+        columnas_orden = ["ID_Reserva", "Fecha/Hora Registro", "Día", "Fecha_Reserva", "Horario", "Profesor", "Ambientes", "Equipos", "Materiales", "Operario"]
         df_mostrar = df_validas[[c for c in columnas_orden if c in df_validas.columns]].copy()
         df_mostrar.insert(0, "❌ Borrar", False)
         
@@ -504,7 +512,7 @@ if st.session_state.rol_actual == "Admin":
         st.subheader("🗄️ Historial de Reservas Eliminadas (Auditoría Global)")
         df_eliminadas = st.session_state.reservas[st.session_state.reservas["Estado"] == "Eliminado"]
         if not df_eliminadas.empty:
-            cols_auditoria = ["Semana", "Día", "Horario", "Profesor", "Ambientes", "Equipos", "Eliminado_por", "Fecha_Eliminacion"]
+            cols_auditoria = ["Semana", "Día", "Fecha_Reserva", "Horario", "Profesor", "Ambientes", "Equipos", "Eliminado_por", "Fecha_Eliminacion"]
             st.dataframe(df_eliminadas[[c for c in cols_auditoria if c in df_eliminadas.columns]], use_container_width=True)
         else:
             st.write("No hay registros eliminados en la papelera.")
@@ -575,7 +583,9 @@ if st.session_state.rol_actual == "Admin":
             .tarjeta-reserva {{ padding: 8px; border-radius: 6px; margin-bottom: 6px; border: 1px solid rgba(0,0,0,0.15); }}
         </style></head><body>
         <table><tr><th>Hora</th>"""
-        for d in dias: html_table += f"<th>{d}</th>"
+        for d in dias: 
+            fecha_col = fechas_semana.get(d, "")
+            html_table += f"<th>{d}<br><small>{fecha_col}</small></th>"
         html_table += "</tr>"
         
         for h in horas:
@@ -655,7 +665,8 @@ if st.session_state.rol_actual == "Admin":
             if dias_sel:
                 st.markdown("##### 2. Requerimientos por Bloque Horario")
                 for d in dias_sel:
-                    st.markdown(f'<div class="bloque-dia"><div class="titulo-dia">🗓️ {d.upper()}</div>', unsafe_allow_html=True)
+                    fecha_asignada = fechas_semana.get(d, "")
+                    st.markdown(f'<div class="bloque-dia"><div class="titulo-dia">🗓️ {d.upper()} ({fecha_asignada})</div>', unsafe_allow_html=True)
                     h_sel = st.multiselect(f"⏰ Horarios para el {d}:", horas, key=f"h_admin_{d}_{st.session_state.form_key}")
                     if h_sel:
                         for h in h_sel:
@@ -688,7 +699,9 @@ if st.session_state.rol_actual == "Admin":
                             reservas_temporales.append({
                                 "ID_Reserva": str(uuid.uuid4()),
                                 "Semana": str_semana,
-                                "Día": d, "Horario": h, "Profesor": profesor, 
+                                "Día": d,
+                                "Fecha_Reserva": fecha_asignada,
+                                "Horario": h, "Profesor": profesor, 
                                 "Ambientes": ", ".join(a_sel) if a_sel else "(Ninguno)", 
                                 "Equipos": ", ".join(e_sel) if e_sel else "(Ninguno)", 
                                 "Materiales": m_sel if m_sel else "(Ninguno)", 
@@ -744,9 +757,6 @@ if st.session_state.rol_actual == "Admin":
                             if cruces: 
                                 st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
                             else:
-                                for r in reservas_temporales:
-                                    del r["List_Amb"]; del r["List_Eq"]
-                                
                                 df_nuevas = pd.DataFrame(reservas_temporales)
                                 if not st.session_state.reservas.empty:
                                     df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
@@ -820,7 +830,8 @@ elif st.session_state.rol_actual == "Docente":
             if dias_sel:
                 st.markdown("##### 2. Requerimientos por Bloque Horario")
                 for d in dias_sel:
-                    st.markdown(f'<div class="bloque-dia"><div class="titulo-dia">🗓️ {d.upper()}</div>', unsafe_allow_html=True)
+                    fecha_asignada = fechas_semana.get(d, "")
+                    st.markdown(f'<div class="bloque-dia"><div class="titulo-dia">🗓️ {d.upper()} ({fecha_asignada})</div>', unsafe_allow_html=True)
                     h_sel = st.multiselect(f"⏰ Horarios para el {d}:", horas, key=f"h_{d}_{st.session_state.form_key}")
                     if h_sel:
                         for h in h_sel:
@@ -844,7 +855,7 @@ elif st.session_state.rol_actual == "Docente":
                                 st.warning("⚠️ **Atención:** Algún recurso seleccionado ya está ocupado.")
                                 
                             col_mat, col_op = st.columns([3, 1])
-                            with col_mat: m_sel = st.text_input("🛠️ Materiales extra (Ej. Dinamómetro)", key=f"m_{d}_{h}_{st.session_state.form_key}")
+                            with col_mat: m_sel = st.text_input("🛠️ Materiales extra", key=f"m_{d}_{h}_{st.session_state.form_key}")
                             with col_op:
                                 st.write(""); st.write("")
                                 req_operario = st.checkbox("👷 Requiere Operario", key=f"op_{d}_{h}_{st.session_state.form_key}")
@@ -853,7 +864,9 @@ elif st.session_state.rol_actual == "Docente":
                             reservas_temporales.append({
                                 "ID_Reserva": str(uuid.uuid4()),
                                 "Semana": str_semana,
-                                "Día": d, "Horario": h, "Profesor": profesor, 
+                                "Día": d,
+                                "Fecha_Reserva": fecha_asignada,
+                                "Horario": h, "Profesor": profesor, 
                                 "Ambientes": ", ".join(a_sel) if a_sel else "(Ninguno)", 
                                 "Equipos": ", ".join(e_sel) if e_sel else "(Ninguno)", 
                                 "Materiales": m_sel if m_sel else "(Ninguno)", 
@@ -909,9 +922,6 @@ elif st.session_state.rol_actual == "Docente":
                             if cruces: 
                                 st.error("⚠️ **Cruce detectado:** Otros docentes acaban de separar estos recursos.")
                             else:
-                                for r in reservas_temporales:
-                                    del r["List_Amb"]; del r["List_Eq"]
-                                
                                 df_nuevas = pd.DataFrame(reservas_temporales)
                                 if not st.session_state.reservas.empty:
                                     df_final = pd.concat([st.session_state.reservas, df_nuevas], ignore_index=True)
@@ -937,7 +947,7 @@ elif st.session_state.rol_actual == "Docente":
         mis_reservas = df_validas[df_validas["Profesor"] == st.session_state.nombre_oficial].copy()
         
         if not mis_reservas.empty:
-            columnas_orden_mis = ["ID_Reserva", "Fecha/Hora Registro", "Día", "Horario", "Ambientes", "Equipos", "Materiales", "Operario"]
+            columnas_orden_mis = ["ID_Reserva", "Fecha/Hora Registro", "Día", "Fecha_Reserva", "Horario", "Ambientes", "Equipos", "Materiales", "Operario"]
             df_mostrar_mis = mis_reservas[[c for c in columnas_orden_mis if c in mis_reservas.columns]].copy()
             df_mostrar_mis.insert(0, "❌ Anular", False)
             
