@@ -79,6 +79,27 @@ def cargar_reservas():
         data = r.json()
         if len(data) > 0:
             df = pd.DataFrame(data)
+            
+            # Limpieza forzada de formato de fechas para evitar el texto largo de GMT
+            if "Fecha_Reserva" in df.columns:
+                def limpiar_fecha(val):
+                    val_str = str(val)
+                    if "GMT" in val_str or "Standard Time" in val_str:
+                        try:
+                            # Intenta parsear la fecha de JS "Thu Nov 19 2026..."
+                            partes = val_str.split(" ")
+                            if len(partes) >= 4:
+                                mes_str = partes[1]
+                                dia_str = partes[2]
+                                anio_str = partes[3]
+                                meses = {"Jan":"01","Feb":"02","Mar":"03","Apr":"04","May":"05","Jun":"06","Jul":"07","Aug":"08","Sep":"09","Oct":"10","Nov":"11","Dec":"12"}
+                                mes_num = meses.get(mes_str, "01")
+                                return f"{dia_str.zfill(2)}/{mes_num}/{anio_str}"
+                        except:
+                            pass
+                    return val_str
+                df["Fecha_Reserva"] = df["Fecha_Reserva"].apply(limpiar_fecha)
+                
             for col in ["Estado", "Eliminado_por", "Fecha_Eliminacion"]:
                 if col not in df.columns:
                     df[col] = ""
@@ -147,11 +168,11 @@ str_semana = f"Semana del {lunes_obj.strftime('%d/%m')} al {viernes_obj.strftime
 
 # Fechas exactas del calendario para los días seleccionados
 fechas_semana = {
-    "Lunes": lunes_obj.strftime("%d/%m/%Y"),
-    "Martes": (lunes_obj + timedelta(days=1)).strftime("%d/%m/%Y"),
-    "Miércoles": (lunes_obj + timedelta(days=2)).strftime("%d/%m/%Y"),
-    "Jueves": (lunes_obj + timedelta(days=3)).strftime("%d/%m/%Y"),
-    "Viernes": viernes_obj.strftime("%d/%m/%Y")
+    "Lunes": str(lunes_obj.strftime("%d/%m/%Y")),
+    "Martes": str((lunes_obj + timedelta(days=1)).strftime("%d/%m/%Y")),
+    "Miércoles": str((lunes_obj + timedelta(days=2)).strftime("%d/%m/%Y")),
+    "Jueves": str((lunes_obj + timedelta(days=3)).strftime("%d/%m/%Y")),
+    "Viernes": str(viernes_obj.strftime("%d/%m/%Y"))
 }
 
 dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
@@ -164,11 +185,13 @@ equipos_base = [
     "REMACHADORA", "FRAGUA", "MAQUETA MOTOR"
 ]
 
+# AQUÍ AGREGAMOS LA OPCIÓN PARA TUS ASISTENTES AL FINAL DE LA LISTA
 profesores_lista = [
     "ROJAS ALEJANDRO, FRANCISCO", "GARCIA ARMAS, JUVENAL", "ALTAMIRANO CHUNGA, LUIS", 
     "CACERES GUERRERO, FREDY", "CHEVARRIA MOSCOSO, MARGARITA", "REBAZA PINO, ALFREDO", 
     "ZINGG ROSELL, AUGUSTO", "VASQUEZ CACERES, JAIME", "ORELLANA PARDAVE, JOSE", 
-    "SALAS PEÑA, CARLO", "RUBIO VALLE, ALEXIS", "YARIN ACHACHAGUA, ANWAR", "SALAS PINTO, DIONISIO", "ADMINISTRACIÓN - NORELLY", "ALATA REY, JOSUÉ ELIEZER"
+    "SALAS PEÑA, CARLO", "RUBIO VALLE, ALEXIS", "YARIN ACHACHAGUA, ANWAR", "SALAS PINTO, DIONISIO", "ADMINISTRACIÓN - NORELLY", "ALATA REY, JOSUÉ ELIEZER",
+    "REVISIÓN - ASISTENTES (SUJELI, JESÚS, LEANSY)"
 ]
 
 def obtener_color_profesor(prof_nombre):
@@ -186,7 +209,8 @@ def obtener_color_profesor(prof_nombre):
     if "RUBIO" in prof_upper: return "#CAFFBF"          
     if "YARIN" in prof_upper or "YARÍN" in prof_upper: return "#FFC6FF" 
     if "NORELLY" in prof_upper: return "#FFB703"        
-    if "ALATA" in prof_upper: return "#9BF6FF"          
+    if "ALATA" in prof_upper: return "#9BF6FF"   
+    if "REVISIÓN - ASISTENTES" in prof_upper: return "#d1c4e9" # Un color violeta suave para diferenciarlos       
     return "#E5E5E5"                                    
 
 # --- ESTILO VISUAL ---
@@ -214,7 +238,22 @@ st.markdown("""
     div.stButton > button:first-child { background-color: #006b3f; color: white; border-color: #006b3f; font-weight: bold; }
     
     .caja-sesion { background-color: #e8f5e9; color: #006b3f; padding: 15px; border-radius: 10px; font-weight: bold; text-align: center; margin-bottom: 20px; border: 2px solid #69f0ae; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    .saludo-ios { font-family: 'Grand Hotel', cursive; font-size: 55px; font-weight: 400; background: linear-gradient(90deg, #002b12 0%, #008f4c 50%, #69f0ae 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-top: -20px; margin-bottom: 35px; line-height: 1.3; padding: 5px 25px 5px 5px; display: inline-block; }
+    
+    /* ACÁ ESTÁ LA CORRECCIÓN DEL SALUDO PARA QUE NO SE CORTE */
+    .saludo-ios { 
+        font-family: 'Grand Hotel', cursive; 
+        font-size: 65px; 
+        font-weight: 400; 
+        background: linear-gradient(90deg, #002b12 0%, #008f4c 50%, #69f0ae 100%); 
+        -webkit-background-clip: text; 
+        -webkit-text-fill-color: transparent; 
+        margin-top: 10px; 
+        margin-bottom: 25px; 
+        line-height: 1.5; 
+        padding: 10px 25px 10px 5px; 
+        display: inline-block; 
+    }
+    
     .bloque-dia { background-color: #e8f5e9; padding: 15px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px; border-left: 6px solid #006b3f;}
     .titulo-dia { font-size: 18px; font-weight: bold; color: #006b3f; margin-bottom: 10px;}
     .bloque-hora { background-color: #ffffff; padding: 12px; border-radius: 5px; margin-top: 15px; margin-bottom: 5px; border-left: 4px solid #4CAF50; border: 1px solid #dcdcdc;}
@@ -764,7 +803,6 @@ if st.session_state.rol_actual == "Admin":
                                     for _, act in df_validas_refresh[(df_validas_refresh["Día"] == d) & (df_validas_refresh["Horario"] == h)].iterrows():
                                         amb_act = set([a.strip() for a in str(act["Ambientes"]).split(",") if a.strip() and a.strip() != "(Ninguno)"])
                                         eq_act = set([e.strip() for e in str(act["Equipos"]).split(",") if e.strip() and e.strip() != "(Ninguno)"])
-                                        # Fix variable references in list comprehensions
                                         if [a for a in [x.strip() for x in res["Ambientes"].split(",")] if a in amb_act and a != "Campo"] or [e for e in [x.strip() for x in res["Equipos"].split(",")] if e in eq_act and e != "Ningún Equipo en particular"]:
                                             cruces.append(f"{d} a las {h}")
                             
