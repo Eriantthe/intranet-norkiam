@@ -80,7 +80,6 @@ def cargar_reservas():
         if len(data) > 0:
             df = pd.DataFrame(data)
             
-            # Limpieza forzada de formato de fechas
             if "Fecha_Reserva" in df.columns:
                 def limpiar_fecha(val):
                     val_str = str(val)
@@ -171,7 +170,8 @@ fechas_semana = {
 }
 
 dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-horas = ["08:00 am - 09:50 am", "11:00 am - 12:50 pm", "02:00 pm - 03:50 pm", "04:00 pm - 05:50 pm"]
+# SE AÑADIÓ EL NUEVO HORARIO SOLICITADO
+horas = ["08:00 am - 09:50 am", "09:50 am - 11:00 am", "11:00 am - 12:50 pm", "02:00 pm - 03:50 pm", "04:00 pm - 05:50 pm"]
 ambientes_base = ["Soldadura", "Metalmecánica", "Motores", "Pool", "Patio", "Rejas", "Campo"]
 equipos_base = [
     "Ningún Equipo en particular", "NH TD5.80", "NH TD5.100", "NH TD90", "JD 3050B", 
@@ -566,6 +566,58 @@ if st.session_state.rol_actual == "Admin":
     with tab_horario:
         st.subheader(f"🖨️ Exportar Horario ({str_semana})")
         
+        # --- LÓGICA DE AGRUPACIÓN PARA REVISIÓN SEMANAL ---
+        def obtener_contenido_celda(reserva_df):
+            if reserva_df.empty:
+                return None, None
+                
+            # Verifica si están los 3 asistentes en este bloque
+            profesores_en_bloque = reserva_df["Profesor"].tolist()
+            es_revision_total = ("REVISIÓN - SUJELI" in profesores_en_bloque and 
+                                 "REVISIÓN - JESÚS" in profesores_en_bloque and 
+                                 "REVISIÓN - LEANSY" in profesores_en_bloque)
+            
+            if es_revision_total:
+                # Agrupa todos los tractores
+                equipos_agrupados = set()
+                for _, r in reserva_df.iterrows():
+                    for eq in str(r["Equipos"]).split(","):
+                        if eq.strip() and eq.strip() != "(Ninguno)":
+                            equipos_agrupados.add(eq.strip())
+                
+                texto_html = f"""
+                <div class="tarjeta-reserva" style="background-color: #e0e0e0; color: #333; text-align: center;">
+                    <b>REVISIÓN SEMANAL</b><br>
+                    <i>Amb.:</i> Pool<br>
+                    <i>Eq.:</i> {', '.join(equipos_agrupados)}
+                </div>"""
+                
+                texto_pdf = f"<b>REVISIÓN SEMANAL</b>\nAmb: Pool\nEq: {', '.join(equipos_agrupados)}"
+                return texto_html, texto_pdf
+            else:
+                # Mostrar normalmente si no están los tres
+                texto_html = ""
+                texto_pdf = ""
+                for _, r in reserva_df.iterrows():
+                    prof = r["Profesor"]
+                    bg_color = obtener_color_profesor(prof) 
+                    op_tag = " <b style='color:#b71c1c;'>[Requiere Operario]</b>" if r.get("Operario", "") == "Sí" else ""
+                    mat = str(r.get('Materiales', '-'))
+                    if not mat or mat.lower() == "nan" or mat == "(Ninguno)": mat = "-"
+                    
+                    texto_html += f"""
+                    <div class="tarjeta-reserva" style="background-color: {bg_color};">
+                        <b>{prof}</b>{op_tag}<br>
+                        <i>Amb.:</i> {r['Ambientes']}<br>
+                        <i>Eq.:</i> {r['Equipos']}<br>
+                        <i>Mat.:</i> <b>{mat}</b>
+                    </div>"""
+                    
+                    op_pdf = " [C/ Operario]" if r.get("Operario") == "Sí" else ""
+                    texto_pdf += f"• {prof}{op_pdf}\nAmb: {r['Ambientes']}\nEq: {r['Equipos']}\nMat: {mat}\n\n"
+                
+                return texto_html, texto_pdf.strip()
+
         if PDF_ACTIVO:
             def generar_pdf():
                 buffer = io.BytesIO()
@@ -580,14 +632,9 @@ if st.session_state.rol_actual == "Admin":
                     row = [h]
                     for d in dias:
                         reserva = df_validas[(df_validas["Día"] == d) & (df_validas["Horario"] == h)]
-                        if not reserva.empty:
-                            texto = ""
-                            for _, r in reserva.iterrows():
-                                op = " [C/ Operario]" if r.get("Operario") == "Sí" else ""
-                                mat = str(r.get('Materiales', '-'))
-                                if not mat or mat.lower() == "nan" or mat == "(Ninguno)": mat = "-"
-                                texto += f"• {r['Profesor']}{op}\nAmb: {r['Ambientes']}\nEq: {r['Equipos']}\nMat: {mat}\n\n"
-                            row.append(texto.strip())
+                        _, txt_pdf = obtener_contenido_celda(reserva)
+                        if txt_pdf:
+                            row.append(txt_pdf)
                         else:
                             row.append("Libre")
                     data.append(row)
@@ -603,6 +650,13 @@ if st.session_state.rol_actual == "Admin":
                     ('FONTSIZE', (0,0), (-1,-1), 8),
                     ('BACKGROUND', (0,1), (0,-1), colors.lightgrey),
                 ]))
+                
+                # Resaltar en gris claro la celda en PDF si dice REVISIÓN SEMANAL
+                for idx_row, row_data in enumerate(data):
+                    for idx_col, cell_data in enumerate(row_data):
+                        if "REVISIÓN SEMANAL" in str(cell_data):
+                            t.setStyle(TableStyle([('BACKGROUND', (idx_col, idx_row), (idx_col, idx_row), colors.HexColor("#e0e0e0"))]))
+
                 elements.append(t)
                 doc.build(elements)
                 buffer.seek(0)
@@ -638,23 +692,9 @@ if st.session_state.rol_actual == "Admin":
             html_table += f"<tr><td class='hora'>{h}</td>"
             for d in dias:
                 reserva = df_validas[(df_validas["Día"] == d) & (df_validas["Horario"] == h)]
-                if not reserva.empty:
-                    contenido = ""
-                    for _, r in reserva.iterrows():
-                        prof = r["Profesor"]
-                        bg_color = obtener_color_profesor(prof) 
-                        op_tag = " <b style='color:#b71c1c;'>[Requiere Operario]</b>" if r.get("Operario", "") == "Sí" else ""
-                        mat = str(r.get('Materiales', '-'))
-                        if not mat or mat.lower() == "nan" or mat == "(Ninguno)": mat = "-"
-                        
-                        contenido += f"""
-                        <div class="tarjeta-reserva" style="background-color: {bg_color};">
-                            <b>{prof}</b>{op_tag}<br>
-                            <i>Amb.:</i> {r['Ambientes']}<br>
-                            <i>Eq.:</i> {r['Equipos']}<br>
-                            <i>Mat.:</i> <b>{mat}</b>
-                        </div>"""
-                    html_table += f"<td>{contenido}</td>"
+                txt_html, _ = obtener_contenido_celda(reserva)
+                if txt_html:
+                    html_table += f"<td>{txt_html}</td>"
                 else: 
                     html_table += "<td></td>"
             html_table += "</tr>"
@@ -705,7 +745,6 @@ if st.session_state.rol_actual == "Admin":
                 st.text_input("Docente Responsable (Autocompletado y Bloqueado)", value=st.session_state.nombre_oficial, disabled=True)
                 profesor = st.session_state.nombre_oficial
                 
-            # Lógica de preselección para asistentes
             def_amb = []
             def_eq = []
             if "REVISIÓN - SUJELI" in profesor:
