@@ -80,13 +80,12 @@ def cargar_reservas():
         if len(data) > 0:
             df = pd.DataFrame(data)
             
-            # Limpieza forzada de formato de fechas para evitar el texto largo de GMT
+            # Limpieza forzada de formato de fechas
             if "Fecha_Reserva" in df.columns:
                 def limpiar_fecha(val):
                     val_str = str(val)
                     if "GMT" in val_str or "Standard Time" in val_str:
                         try:
-                            # Intenta parsear la fecha de JS "Thu Nov 19 2026..."
                             partes = val_str.split(" ")
                             if len(partes) >= 4:
                                 mes_str = partes[1]
@@ -149,24 +148,20 @@ tz_lima = pytz.timezone('America/Lima')
 ahora_utc = datetime.utcnow()
 ahora = ahora_utc.replace(tzinfo=pytz.utc).astimezone(tz_lima)
 
-wd = ahora.weekday() # 0=Lunes, 1=Martes, ..., 6=Domingo
+wd = ahora.weekday() 
 hora_actual = ahora.hour
 
-# El sistema cierra los jueves a medianoche (Viernes de 00:00 a 07:59 am)
 formulario_cerrado = (wd == 4 and hora_actual < 8)
 
 if wd < 4 or formulario_cerrado:
-    # Lunes a Jueves (o Viernes madrugada) -> Se reserva para la PRÓXIMA semana
     dias_al_lunes = 7 - wd
 else:
-    # Viernes después de las 8am, Sábado y Domingo -> Se reserva para la SUBSIGUIENTE semana
     dias_al_lunes = 14 - wd
 
 lunes_obj = ahora + timedelta(days=dias_al_lunes)
 viernes_obj = lunes_obj + timedelta(days=4)
 str_semana = f"Semana del {lunes_obj.strftime('%d/%m')} al {viernes_obj.strftime('%d/%m')}"
 
-# Fechas exactas del calendario para los días seleccionados
 fechas_semana = {
     "Lunes": str(lunes_obj.strftime("%d/%m/%Y")),
     "Martes": str((lunes_obj + timedelta(days=1)).strftime("%d/%m/%Y")),
@@ -185,13 +180,12 @@ equipos_base = [
     "REMACHADORA", "FRAGUA", "MAQUETA MOTOR"
 ]
 
-# AQUÍ AGREGAMOS LA OPCIÓN PARA TUS ASISTENTES AL FINAL DE LA LISTA
 profesores_lista = [
     "ROJAS ALEJANDRO, FRANCISCO", "GARCIA ARMAS, JUVENAL", "ALTAMIRANO CHUNGA, LUIS", 
     "CACERES GUERRERO, FREDY", "CHEVARRIA MOSCOSO, MARGARITA", "REBAZA PINO, ALFREDO", 
     "ZINGG ROSELL, AUGUSTO", "VASQUEZ CACERES, JAIME", "ORELLANA PARDAVE, JOSE", 
     "SALAS PEÑA, CARLO", "RUBIO VALLE, ALEXIS", "YARIN ACHACHAGUA, ANWAR", "SALAS PINTO, DIONISIO", "ADMINISTRACIÓN - NORELLY", "ALATA REY, JOSUÉ ELIEZER",
-    "REVISIÓN - ASISTENTES (SUJELI, JESÚS, LEANSY)"
+    "REVISIÓN - SUJELI", "REVISIÓN - JESÚS", "REVISIÓN - LEANSY"
 ]
 
 def obtener_color_profesor(prof_nombre):
@@ -210,7 +204,9 @@ def obtener_color_profesor(prof_nombre):
     if "YARIN" in prof_upper or "YARÍN" in prof_upper: return "#FFC6FF" 
     if "NORELLY" in prof_upper: return "#FFB703"        
     if "ALATA" in prof_upper: return "#9BF6FF"   
-    if "REVISIÓN - ASISTENTES" in prof_upper: return "#d1c4e9" # Un color violeta suave para diferenciarlos       
+    if "REVISIÓN - SUJELI" in prof_upper: return "#ffcc80" 
+    if "REVISIÓN - JESÚS" in prof_upper: return "#81d4fa"  
+    if "REVISIÓN - LEANSY" in prof_upper: return "#a5d6a7" 
     return "#E5E5E5"                                    
 
 # --- ESTILO VISUAL ---
@@ -239,7 +235,6 @@ st.markdown("""
     
     .caja-sesion { background-color: #e8f5e9; color: #006b3f; padding: 15px; border-radius: 10px; font-weight: bold; text-align: center; margin-bottom: 20px; border: 2px solid #69f0ae; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
     
-    /* ACÁ ESTÁ LA CORRECCIÓN DEL SALUDO PARA QUE NO SE CORTE */
     .saludo-ios { 
         font-family: 'Grand Hotel', cursive; 
         font-size: 65px; 
@@ -288,7 +283,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# FILTRO GLOBAL (CORREGIDO PARA EVITAR KEYERROR)
+# FILTRO GLOBAL
 # ==========================================
 columnas_requeridas = [
     "ID_Reserva", "Semana", "Día", "Fecha_Reserva", "Horario", "Profesor", 
@@ -297,7 +292,6 @@ columnas_requeridas = [
 ]
 
 if not st.session_state.reservas.empty:
-    # Validamos que las columnas mínimas existan antes de filtrar
     if all(col in st.session_state.reservas.columns for col in ["Estado", "Semana", "Día", "Horario"]):
         df_validas = st.session_state.reservas[
             (st.session_state.reservas["Estado"] != "Eliminado") & 
@@ -710,6 +704,19 @@ if st.session_state.rol_actual == "Admin":
             else:
                 st.text_input("Docente Responsable (Autocompletado y Bloqueado)", value=st.session_state.nombre_oficial, disabled=True)
                 profesor = st.session_state.nombre_oficial
+                
+            # Lógica de preselección para asistentes
+            def_amb = []
+            def_eq = []
+            if "REVISIÓN - SUJELI" in profesor:
+                def_amb = ["Pool"]
+                def_eq = ["NH TD5.80", "NH TD5.100"]
+            elif "REVISIÓN - JESÚS" in profesor:
+                def_amb = ["Pool"]
+                def_eq = ["NH B110B", "JD 3050B", "NH L223"]
+            elif "REVISIÓN - LEANSY" in profesor:
+                def_amb = ["Pool"]
+                def_eq = ["NH TD90", "JD 1040"]
             
             dias_sel = st.multiselect("1. Seleccione los días de práctica:", dias, key=f"dias_main_admin_{st.session_state.form_key}")
             reservas_temporales = []
@@ -735,11 +742,11 @@ if st.session_state.rol_actual == "Admin":
                             def formatear_eq(n): return f"🔴 [OCUPADO] {n}" if n in eq_ya_ocupados else n
 
                             col_a, col_e = st.columns(2)
-                            with col_a: a_sel = st.multiselect("🏢 Ambientes", ambientes_base, format_func=formatear_amb, key=f"a_admin_{d}_{h}_{st.session_state.form_key}")
-                            with col_e: e_sel = st.multiselect("🚜 Equipos", equipos_base, format_func=formatear_eq, key=f"e_admin_{d}_{h}_{st.session_state.form_key}")
+                            with col_a: a_sel = st.multiselect("🏢 Ambientes", ambientes_base, default=def_amb, format_func=formatear_amb, key=f"a_admin_{d}_{h}_{st.session_state.form_key}")
+                            with col_e: e_sel = st.multiselect("🚜 Equipos", equipos_base, default=def_eq, format_func=formatear_eq, key=f"e_admin_{d}_{h}_{st.session_state.form_key}")
                             
                             if [a for a in a_sel if a in amb_ya_ocupados] or [e for e in e_sel if e in eq_ya_ocupados]:
-                                st.warning("⚠️ **Atención:** Algún recurso seleccionado ya está ocupado.")
+                                st.warning("⚠️ **Atención:** Algún recurso preseleccionado ya está ocupado.")
                                 
                             col_mat, col_op = st.columns([3, 1])
                             with col_mat: m_sel = st.text_input("🛠️ Materiales extra (Ej. Dinamómetro)", key=f"m_admin_{d}_{h}_{st.session_state.form_key}")
@@ -879,6 +886,18 @@ elif st.session_state.rol_actual == "Docente":
             st.text_input("Docente Responsable (Autocompletado)", value=st.session_state.nombre_oficial, disabled=True)
             profesor = st.session_state.nombre_oficial
             
+            def_amb = []
+            def_eq = []
+            if "REVISIÓN - SUJELI" in profesor:
+                def_amb = ["Pool"]
+                def_eq = ["NH TD5.80", "NH TD5.100"]
+            elif "REVISIÓN - JESÚS" in profesor:
+                def_amb = ["Pool"]
+                def_eq = ["NH B110B", "JD 3050B", "NH L223"]
+            elif "REVISIÓN - LEANSY" in profesor:
+                def_amb = ["Pool"]
+                def_eq = ["NH TD90", "JD 1040"]
+            
             dias_sel = st.multiselect("1. Seleccione los días de práctica:", dias, key=f"dias_main_{st.session_state.form_key}")
             reservas_temporales = []
             
@@ -903,11 +922,11 @@ elif st.session_state.rol_actual == "Docente":
                             def formatear_eq(n): return f"🔴 [OCUPADO] {n}" if n in eq_ya_ocupados else n
 
                             col_a, col_e = st.columns(2)
-                            with col_a: a_sel = st.multiselect("🏢 Ambientes", ambientes_base, format_func=formatear_amb, key=f"a_{d}_{h}_{st.session_state.form_key}")
-                            with col_e: e_sel = st.multiselect("🚜 Equipos", equipos_base, format_func=formatear_eq, key=f"e_{d}_{h}_{st.session_state.form_key}")
+                            with col_a: a_sel = st.multiselect("🏢 Ambientes", ambientes_base, default=def_amb, format_func=formatear_amb, key=f"a_{d}_{h}_{st.session_state.form_key}")
+                            with col_e: e_sel = st.multiselect("🚜 Equipos", equipos_base, default=def_eq, format_func=formatear_eq, key=f"e_{d}_{h}_{st.session_state.form_key}")
                             
                             if [a for a in a_sel if a in amb_ya_ocupados] or [e for e in e_sel if e in eq_ya_ocupados]:
-                                st.warning("⚠️ **Atención:** Algún recurso seleccionado ya está ocupado.")
+                                st.warning("⚠️ **Atención:** Algún recurso preseleccionado ya está ocupado.")
                                 
                             col_mat, col_op = st.columns([3, 1])
                             with col_mat: m_sel = st.text_input("🛠️ Materiales extra", key=f"m_{d}_{h}_{st.session_state.form_key}")
